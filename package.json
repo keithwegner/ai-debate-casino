@@ -1,0 +1,16 @@
+{
+  "name": "ai-debate-casino",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Fake-chip AI debate casino hackathon MVP with SSE live updates and audience heckle cards.",
+  "scripts": {
+    "start": "node server.mjs",
+    "mock": "MOCK_AI=true node server.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check tests/smoke.mjs",
+    "smoke": "node tests/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
