@@ -30,6 +30,7 @@ const MOCK_REASON = MOCK_REQUESTED ? 'MOCK_AI=true' : OPENAI_KEY_STATUS.reason;
 
 const rooms = new Map();
 const subscribers = new Map();
+const READABILITY_MODES = new Set(['classic', 'kids']);
 
 const PERSONAS = [
   { id: 'formal_logician', displayName: 'Professor Steelman', archetype: 'Formal Logician', tagline: 'Precise. Numbered. Slightly disappointed.', style: 'Structured, exacting, calm, logical, low-flash. Uses numbered premises and calls out sloppy inference.', strengths: ['logical coherence', 'topic control', 'fallacy detection'], weaknesses: ['low humor', 'can sound bloodless'] },
@@ -135,6 +136,7 @@ function createRoom(hostName) {
     commentary: [],
     running: false,
     error: null,
+    readabilityMode: 'classic',
   };
   rooms.set(room.id, room);
   pushComment(room, 'Room created. The table is open.');
@@ -169,6 +171,7 @@ function publicRoom(room) {
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
     version: room.version,
+    readabilityMode: readabilityMode(room),
     ai: {
       mode: MOCK_AI ? 'mock' : 'openai',
       mockReason: MOCK_AI ? MOCK_REASON : '',
@@ -203,6 +206,29 @@ function requireRoom(roomId) {
 
 function requireHost(req, room) {
   if (req.headers['x-host-token'] !== room.hostToken) throw apiError(403, 'Host token required.');
+}
+
+function readabilityMode(room) {
+  return room?.readabilityMode === 'kids' ? 'kids' : 'classic';
+}
+
+function normalizeReadabilityMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (READABILITY_MODES.has(mode)) return mode;
+  throw apiError(400, 'Readability mode must be classic or kids.');
+}
+
+function readabilityLabel(mode) {
+  return mode === 'kids' ? 'Kids' : 'Classic';
+}
+
+function updateReadability(room, value) {
+  if (room.running || ['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status)) {
+    throw apiError(409, 'Readability cannot be changed while a debate is running.');
+  }
+  const mode = normalizeReadabilityMode(value);
+  room.readabilityMode = mode;
+  pushComment(room, `Audience readability set to ${readabilityLabel(mode)}.`);
 }
 
 function sendJson(res, status, payload) {
@@ -285,6 +311,13 @@ async function handleApi(req, res, url) {
       room.players.push(player);
       pushComment(room, `${player.displayName} took a seat.`);
       return sendJson(res, 201, { room: publicRoom(room), playerId: player.id });
+    }
+
+    if (method === 'POST' && action === 'readability') {
+      requireHost(req, room);
+      const body = await readJson(req);
+      updateReadability(room, body.mode);
+      return sendJson(res, 200, { room: publicRoom(room) });
     }
 
     if (method === 'POST' && action === 'topics/generate') {
@@ -740,7 +773,7 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle) {
     const transcript = room.turns.map((t) => `${t.phase} — ${t.speakerName}: ${t.text}`).join('\n\n') || '(No prior turns.)';
     const text = await openAIText({
       task: 'debate',
-      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.`,
+      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
       user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
     });
@@ -757,7 +790,18 @@ function cleanupTurn(text, debater) {
   return cleaned || `${debater.displayName} pauses, adjusts the microphone, and accidentally makes the room more tense.`;
 }
 
+function debateReadabilityGuidance(room) {
+  if (readabilityMode(room) !== 'kids') return '';
+  return ' Kid-friendly readability mode is on. Write for grades 5-6. Use short sentences, concrete examples, and plain words. Avoid business jargon, legalese, abstract strategy terms, and dense metaphors. Keep the persona flavor and jokes, but make the argument easy for a 10-12 year old to follow. Keep the same debate structure and word limit.';
+}
+
+function judgeReadabilityGuidance(room) {
+  if (readabilityMode(room) !== 'kids') return '';
+  return ' Kid-friendly readability mode is on. Explain the winner in plain grades 5-6 language. Keep the score labels unchanged, but make verdict, bestLine, and worstArgument.summary easy for a 10-12 year old to understand. Use short sentences and concrete reasons.';
+}
+
 function mockDebateTurn(room, phase, debater, heckle) {
+  if (readabilityMode(room) === 'kids') return mockKidsDebateTurn(room, phase, debater, heckle);
   const opponent = room.debaters.find((d) => d.id !== debater.id) || { displayName: 'my opponent' };
   const stance = String(debater.stance || '').replace(/[.!?]+$/, '');
   const heckleSentence = heckle ? ` Because the audience bought ${heckle.label}, let me comply: ${mockHeckleLine(heckle)} ` : ' ';
@@ -777,12 +821,40 @@ function mockDebateTurn(room, phase, debater, heckle) {
   return byPersona[debater.personaId] || byPersona.formal_logician;
 }
 
+function mockKidsDebateTurn(room, phase, debater, heckle) {
+  const opponent = room.debaters.find((d) => d.id !== debater.id) || { displayName: 'my opponent' };
+  const stance = String(debater.stance || '').replace(/[.!?]+$/, '');
+  const heckleSentence = heckle ? ` The audience also gave me ${heckle.label}, so here is the simple version: ${mockKidsHeckleLine(heckle)} ` : ' ';
+  if (phase.phase.includes('question')) return `${opponent.displayName}, what is the biggest reason your side works? Please say it in one clear sentence so everyone at the table can follow it.${heckleSentence}`;
+  if (phase.phase.includes('answer')) return `Here is the simple answer.${heckleSentence}My side works because it explains what would happen next. My opponent is making the idea sound silly, but silly ideas can still have rules, choices, and consequences. That is why the judge should trust my side.`;
+  if (phase.phase.includes('Closing')) return `The round is simple.${heckleSentence}I showed why ${stance}. My opponent had funny lines, but my side gave a clearer reason. The judge should pick the side that explains the problem in a way people can use. Vote ${debater.displayName}.`;
+  const byPersona = {
+    formal_logician: `I will keep this clear. ${stance} because the reasons fit together.${heckleSentence}First, my side explains what would happen. Second, it shows why that result makes sense. Third, my opponent is mostly pointing at the idea and saying it sounds strange. Strange is not the same as wrong.`,
+    chaos_gremlin: `This topic is weird, but we can still understand it.${heckleSentence}${stance} because the world already runs on weird rules. People follow calendars, passwords, and meetings. If those can work, this idea can work too.`,
+    venture_capitalist: `Here is the simple pitch.${heckleSentence}${stance} because good ideas solve a problem and keep people coming back. My opponent is asking if the idea sounds normal. That is the wrong test. The real test is whether it can work.`,
+    retired_admiral: `This is about planning and follow-through.${heckleSentence}${stance} because a good plan needs clear jobs, steady rules, and people who know what to do next. My opponent has doubts, but doubts are not a plan.`,
+    corporate_lawyer: `Let us check the simple facts. ${stance}.${heckleSentence}Who is in charge? What could go wrong? What rule decides the answer? My side answers those questions better than my opponent does.`,
+    reddit_moderator: `I see the problem with my opponent's argument.${heckleSentence}${stance} because they need more than a loud objection. They need proof. My side gives a clearer reason and does not skip the hard part.`,
+    ancient_philosopher: `This may sound like a joke, but jokes can teach us something.${heckleSentence}${stance} because the funny idea helps us see a real rule about people, choices, and fairness.`,
+    product_manager: `Think about the people using this idea. ${stance}.${heckleSentence}If it helps them, if they come back, and if the rules are clear, then the idea has a real chance. My opponent is missing that simple test.`,
+  };
+  return byPersona[debater.personaId] || byPersona.formal_logician;
+}
+
 function mockHeckleLine(heckle) {
   if (heckle.cardId === 'pirate_analogy') return 'like a pirate choosing between treasure and a spreadsheet, the map matters more than the hat.';
   if (heckle.cardId === 'explain_to_child') return 'imagine two cookies, one rule, and a goose who keeps moving the plate.';
   if (heckle.cardId === 'legal_caveat') return 'subject, naturally, to the survival of any indemnity clause hiding in the snack drawer.';
   if (heckle.cardId === 'military_metaphor') return 'the opposing case has advanced beyond its supply lines and is now vulnerable on both flanks.';
   return 'the premise behaves like a raccoon with a clipboard: chaotic, but weirdly operational.';
+}
+
+function mockKidsHeckleLine(heckle) {
+  if (heckle.cardId === 'pirate_analogy') return 'it is like a pirate needing a map before sailing.';
+  if (heckle.cardId === 'explain_to_child') return 'it is like sharing cookies: the rule matters because everyone wants a fair turn.';
+  if (heckle.cardId === 'legal_caveat') return 'there still has to be a rule that says who is responsible.';
+  if (heckle.cardId === 'military_metaphor') return 'it is like a team needing a clear plan before a big game.';
+  return 'it is like comparing two animals and asking which one follows the rules better.';
 }
 
 async function safeJudgeDebate(room) {
@@ -792,7 +864,7 @@ async function safeJudgeDebate(room) {
       task: 'judge',
       name: 'judge_verdict',
       schema: judgeSchema(),
-      system: 'You are The Honorable Judge Bottington III for AI Debate Casino. Score a comedic debate. You must choose exactly one winner; no ties. Use the rubric: logical coherence, responsiveness, rhetorical force, humor, originality, topic control. Reward both logic and entertainment. Do not consider betting distribution. Also settle prop markets from the transcript using clear evidence.',
+      system: `You are The Honorable Judge Bottington III for AI Debate Casino. Score a comedic debate. You must choose exactly one winner; no ties. Use the rubric: logical coherence, responsiveness, rhetorical force, humor, originality, topic control. Reward both logic and entertainment. Do not consider betting distribution. Also settle prop markets from the transcript using clear evidence.${judgeReadabilityGuidance(room)}`,
       user: JSON.stringify({ topic: room.topic, debaters: room.debaters, markets: room.markets.filter((m) => m.type === 'prop'), heckles: room.heckles, transcript: room.turns }, null, 2),
       maxOutputTokens: 2400,
     });
@@ -847,6 +919,9 @@ function mockJudge(room) {
   const win = { logicalCoherence: 8, responsiveness: 8, rhetoricalForce: 9, humor: 8, originality: 8, topicControl: 8, total: 49 };
   const lose = { logicalCoherence: 7, responsiveness: 7, rhetoricalForce: 7, humor: 7, originality: 7, topicControl: 7, total: 42 };
   const transcript = room.turns.map((t) => t.text).join(' ');
+  if (readabilityMode(room) === 'kids') {
+    return { winnerDebaterId, winnerName: winner.displayName, margin: h % 3 === 0 ? 'clear' : 'narrow', confidence: 0.72, scores: { debater_a: winnerDebaterId === 'debater_a' ? win : lose, debater_b: winnerDebaterId === 'debater_b' ? win : lose }, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: 'The losing side had some funny ideas, but it did not explain the main point clearly enough.' }, verdict: `${winner.displayName} wins. Their side was easier to follow. They gave clear reasons, answered the other side, and showed what would happen next. The other side had good moments, but it left too many questions unanswered.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|pirate|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found a matching line in the debate.', confidence: 0.78 })) };
+  }
   return { winnerDebaterId, winnerName: winner.displayName, margin: h % 3 === 0 ? 'clear' : 'narrow', confidence: 0.72, scores: { debater_a: winnerDebaterId === 'debater_a' ? win : lose, debater_b: winnerDebaterId === 'debater_b' ? win : lose }, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: 'The losing side occasionally mistook atmosphere, volume, or procedural suspicion for proof.' }, verdict: `${winner.displayName} wins. The winning side gave the judge a more usable frame, made better callbacks, and treated the absurd premise as a system of incentives rather than a one-note joke. The losing side had moments, but too often reached for atmosphere when it needed architecture.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|petting zoo|pirate|clipboard|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found matching transcript language.', confidence: 0.78 })) };
 }
 

@@ -253,9 +253,21 @@ function hostControlsHtml(room) {
       <div class="host-grid">
         <div class="control-card"><h3>1. Topic</h3><textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canEdit ? '' : 'disabled'}></textarea><button data-action="generateTopics" ${canEdit ? '' : 'disabled'}>Generate topic candidates</button><label>Custom resolution</label><input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canEdit ? '' : 'disabled'} /><button data-action="setCustomTopic" ${canEdit ? '' : 'disabled'}>Use custom topic</button><div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · Comedy ${h(t.comedyPotential)}/10</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canEdit ? '' : 'disabled'}>Select</button></article>`).join('')}</div></div>
         <div class="control-card"><h3>2. Personas + odds</h3>${personaSelectHtml('personaA', room.debaters?.[0]?.personaId)}${personaSelectHtml('personaB', room.debaters?.[1]?.personaId)}<button data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button></div>
-        <div class="control-card"><h3>3. Run sheet</h3><ol><li>Generate/select a topic.</li><li>Assign personas.</li><li>Post fake-chip odds.</li><li>Let humans or demo bots bet.</li><li>Start debate.</li></ol><p class="fineprint">The one-click button handles all setup and starts the round.</p></div>
+        <div class="control-card"><h3>3. Run sheet</h3>${readabilityControlHtml(room, canEdit)}<ol><li>Generate/select a topic.</li><li>Assign personas.</li><li>Post fake-chip odds.</li><li>Let humans or demo bots bet.</li><li>Start debate.</li></ol><p class="fineprint">The one-click button handles all setup and starts the round.</p></div>
       </div>
     </section>`;
+}
+
+function readabilityControlHtml(room, canEdit) {
+  const mode = room.readabilityMode === 'kids' ? 'kids' : 'classic';
+  return `
+    <div class="audience-control">
+      <label>Audience</label>
+      <div class="segmented-control" role="group" aria-label="Audience readability">
+        <button data-action="setReadability" data-mode="classic" class="${mode === 'classic' ? 'active' : ''}" aria-pressed="${mode === 'classic'}" ${canEdit ? '' : 'disabled'}>Classic</button>
+        <button data-action="setReadability" data-mode="kids" class="${mode === 'kids' ? 'active' : ''}" aria-pressed="${mode === 'kids'}" ${canEdit ? '' : 'disabled'}>Kids</button>
+      </div>
+    </div>`;
 }
 
 function personaSelectHtml(id, selected) {
@@ -343,7 +355,7 @@ function bindRoom() {
   markPendingControls();
   for (const el of document.querySelectorAll('[data-action]')) {
     el.addEventListener('click', async (event) => {
-      await handleAction(event.currentTarget.dataset.action, { marketId: event.currentTarget.dataset.marketId, topicId: event.currentTarget.dataset.topicId, cardId: event.currentTarget.dataset.cardId });
+      await handleAction(event.currentTarget.dataset.action, { marketId: event.currentTarget.dataset.marketId, topicId: event.currentTarget.dataset.topicId, cardId: event.currentTarget.dataset.cardId, mode: event.currentTarget.dataset.mode });
     });
   }
 }
@@ -380,6 +392,7 @@ async function handleAction(action, payload = {}) {
       case 'generateTopics': data = await api(`${roomPath}/topics/generate`, { method: 'POST', host: true, body: { prompt: inputs.topicPrompt } }); state.message = 'Topic candidates generated.'; break;
       case 'selectTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { topicId: payload.topicId } }); state.message = 'Topic selected.'; break;
       case 'setCustomTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { customTopic: inputs.customTopic } }); state.message = 'Custom topic selected.'; break;
+      case 'setReadability': data = await api(`${roomPath}/readability`, { method: 'POST', host: true, body: { mode: payload.mode } }); state.message = `Audience set to ${payload.mode === 'kids' ? 'Kids' : 'Classic'}.`; break;
       case 'setPersonas': data = await api(`${roomPath}/personas`, { method: 'POST', host: true, body: { personaAId: inputs.personaAId, personaBId: inputs.personaBId } }); state.message = 'Debaters assigned.'; break;
       case 'postOdds': data = await api(`${roomPath}/odds`, { method: 'POST', host: true, body: {} }); state.message = 'Odds posted.'; break;
       case 'demoFill': data = await api(`${roomPath}/demo-fill`, { method: 'POST', host: true, body: {} }); state.message = 'Demo audience added.'; break;
@@ -416,6 +429,7 @@ function actionLabel(action) {
     generateTopics: 'Generating topics',
     selectTopic: 'Selecting topic',
     setCustomTopic: 'Normalizing topic',
+    setReadability: 'Updating audience',
     setPersonas: 'Assigning debaters',
     postOdds: 'Posting odds',
     demoFill: 'Adding demo audience',

@@ -56,8 +56,9 @@ MOCK_AI=true node server.mjs
 ## Recommended hackathon demo flow
 
 1. Create a room.
-2. Click **One-click demo round**.
-3. Watch the app auto-select a topic, assign personas, post odds, add demo players, place bot bets, run the debate, judge it, settle the bets, and update the leaderboard.
+2. Choose **Classic** or **Kids** under **Audience**.
+3. Click **One-click demo round**.
+4. Watch the app auto-select a topic, assign personas, post odds, add demo players, place bot bets, run the debate, judge it, settle the bets, and update the leaderboard.
 
 For a more interactive demo, have audience members join by room code, place fake-chip bets, and buy heckle cards while the debate is running.
 
