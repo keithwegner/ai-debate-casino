@@ -83,7 +83,11 @@ async function api(path, options = {}) {
   const response = await fetch(path, { method: options.method || 'GET', headers, body: options.body ? JSON.stringify(options.body) : undefined });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error(data.error || `Request failed: ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(data.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -102,7 +106,15 @@ async function loadRoom() {
     const data = await api(`/api/rooms/${state.session.roomId}`);
     setRoom(data.room);
   } catch (e) {
-    state.error = e.message;
+    if (e.status === 404) {
+      const roomId = state.session.roomId;
+      stopLiveUpdates();
+      writeSession(null);
+      state.room = null;
+      state.error = `Saved room ${roomId} is no longer active. Start a new table or join with a fresh room code.`;
+    } else {
+      state.error = e.message;
+    }
     render();
   }
 }
