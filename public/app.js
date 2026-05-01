@@ -13,7 +13,50 @@ let state = {
   eventSource: null,
 };
 
+initAmbientMotion();
 init();
+
+function initAmbientMotion() {
+  const rootEl = document.documentElement;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let enabled = !reduced.matches;
+  let frame = 0;
+  let targetX = 0;
+  let targetY = 0;
+
+  function syncMotionPreference() {
+    enabled = !reduced.matches;
+    rootEl.dataset.motion = enabled ? 'ambient' : 'reduced';
+    if (!enabled) {
+      rootEl.style.setProperty('--parallax-x', '0px');
+      rootEl.style.setProperty('--parallax-y', '0px');
+      rootEl.style.setProperty('--scroll-shift', '0px');
+    }
+  }
+
+  function applyMotion() {
+    frame = 0;
+    if (!enabled) return;
+    rootEl.style.setProperty('--parallax-x', `${targetX.toFixed(2)}px`);
+    rootEl.style.setProperty('--parallax-y', `${targetY.toFixed(2)}px`);
+    rootEl.style.setProperty('--scroll-shift', `${(Math.min(window.scrollY || 0, 900) * -0.06).toFixed(2)}px`);
+  }
+
+  function scheduleMotion() {
+    if (!frame) frame = requestAnimationFrame(applyMotion);
+  }
+
+  window.addEventListener('pointermove', (event) => {
+    if (!enabled) return;
+    targetX = ((event.clientX / window.innerWidth) - 0.5) * 28;
+    targetY = ((event.clientY / window.innerHeight) - 0.5) * 22;
+    scheduleMotion();
+  }, { passive: true });
+
+  window.addEventListener('scroll', scheduleMotion, { passive: true });
+  reduced.addEventListener?.('change', syncMotionPreference);
+  syncMotionPreference();
+}
 
 async function init() {
   await loadPersonas();
@@ -99,7 +142,7 @@ function render() {
     return;
   }
   if (!state.room) {
-    root.innerHTML = `<main class="shell"><section class="panel hero"><h1>Loading room ${h(state.session.roomId)}…</h1>${flashHtml()}${processingHtml(null)}</section></main>`;
+    root.innerHTML = `<main class="shell loading-shell"><section class="panel loading-card"><div class="kicker">Table status</div><h1>Loading room ${h(state.session.roomId)}…</h1>${flashHtml()}${processingHtml(null)}</section></main>`;
     return;
   }
   root.innerHTML = roomHtml(state.room);
@@ -109,19 +152,23 @@ function render() {
 function landingHtml() {
   return `
     <main class="shell landing">
-      <section class="hero panel">
-        <div class="kicker">Fake chips. Real model arguments.</div>
-        <h1>AI Debate Casino</h1>
-        <p class="lede">A party-game sportsbook where AI personas debate ridiculous propositions and an AI judge settles the fake-chip board.</p>
+      <section class="hero casino-hero">
+        <div class="marquee-band" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <div class="casino-mark" aria-hidden="true"><span>AI</span></div>
+          <div class="kicker">Fake chips. Real model arguments.</div>
+          <h1>AI Debate Casino</h1>
+          <p class="lede">A party-game sportsbook where AI personas debate ridiculous propositions and an AI judge settles the fake-chip board.</p>
+        </div>
         ${flashHtml()}
-        <div class="landing-grid">
-          <form id="createForm" class="card form-card">
+        <div class="landing-grid" aria-label="Create or join a room">
+          <form id="createForm" class="form-card cashier-card">
             <h2>Create a room</h2>
             <label>Your display name</label>
             <input name="displayName" value="Keith" maxlength="32" />
             <button class="primary" type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('createRoom', 'Open the table')}</button>
           </form>
-          <form id="joinForm" class="card form-card">
+          <form id="joinForm" class="form-card cashier-card">
             <h2>Join a room</h2>
             <label>Room code</label>
             <input name="roomId" placeholder="ABC123" maxlength="12" value="${h(queryRoomId)}" />
@@ -139,8 +186,9 @@ function roomHtml(room) {
   const me = currentPlayer(room);
   const isHost = Boolean(state.session?.hostToken);
   return `
-    <main class="app-shell">
+    <main class="app-shell room-shell">
       ${topBarHtml(room, me, isHost)}
+      ${setupProgressHtml(room)}
       ${flashHtml()}
       ${processingHtml(room)}
       <section class="main-grid">
@@ -148,7 +196,8 @@ function roomHtml(room) {
           ${debatersHtml(room)}
           ${leaderboardHtml(room)}
         </aside>
-        <section class="stage panel">
+        <section class="stage panel" aria-label="Debate table">
+          <div class="table-marker" aria-hidden="true"></div>
           ${topicHtml(room)}
           ${transcriptHtml(room)}
           ${verdictHtml(room)}
@@ -169,12 +218,56 @@ function topBarHtml(room, me, isHost) {
     : `mock fallback${room.ai.mockReason ? ` (${room.ai.mockReason})` : ''}`;
   return `
     <header class="topbar panel">
-      <div><div class="kicker">Room</div><div class="room-code">${h(room.id)}</div></div>
-      <div><div class="kicker">Phase</div><div class="phase"><span class="dot ${statusClass(room.status)}"></span>${h(room.currentPhase)}</div></div>
-      <div><div class="kicker">AI</div><div class="muted small">${h(ai)}</div></div>
-      <div><div class="kicker">You</div><div>${h(me?.displayName || 'Observer')} · <strong>${chips(me?.bankroll || 0)}</strong></div></div>
+      <div class="topbar-cell room-cell"><div class="kicker">Room</div><div class="room-code">${h(room.id)}</div></div>
+      <div class="topbar-cell"><div class="kicker">Phase</div><div class="phase"><span class="dot ${statusClass(room.status)}"></span>${h(room.currentPhase)}</div></div>
+      <div class="topbar-cell"><div class="kicker">AI</div><div class="muted small">${h(ai)}</div></div>
+      <div class="topbar-cell"><div class="kicker">You</div><div>${h(me?.displayName || 'Observer')} · <strong>${chips(me?.bankroll || 0)}</strong></div></div>
       <div class="top-actions">${isHost ? '<span class="host-badge">Host</span>' : ''}<button data-action="copyLink">Copy link</button><button data-action="leaveRoom">Leave</button></div>
     </header>`;
+}
+
+function setupProgressHtml(room) {
+  const steps = setupProgressSteps(room);
+  const activeIndex = Math.max(0, ...steps.map((step, index) => step.state === 'upcoming' ? -1 : index));
+  const progress = Math.round((activeIndex / Math.max(steps.length - 1, 1)) * 100);
+  const current = steps.find((step) => step.state === 'current');
+  const summary = current ? `Current: ${current.label}` : 'Round setup complete';
+  return `
+    <section class="setup-progress panel" aria-label="Round setup progress" style="--setup-progress:${progress}%">
+      <div class="setup-progress-head">
+        <div><div class="kicker">Run sheet</div><h2>Round progress</h2></div>
+        <div class="setup-progress-summary">${h(summary)}</div>
+      </div>
+      <ol class="setup-steps">
+        ${steps.map((step, index) => `<li class="setup-step ${step.state}" ${step.state === 'current' ? 'aria-current="step"' : ''}><span class="setup-chip">${index + 1}</span><span class="setup-label">${h(step.label)}</span><span class="setup-status">${h(step.status)}</span></li>`).join('')}
+      </ol>
+    </section>`;
+}
+
+function setupProgressSteps(room) {
+  const status = room.status || 'LOBBY';
+  const hasTopic = Boolean(room.topic);
+  const hasDebaters = (room.debaters?.length || 0) === 2;
+  const hasMarkets = (room.markets?.length || 0) > 0;
+  const debatersConfirmed = hasDebaters && state.message === 'Debaters assigned.';
+  const bettingComplete = ['BETTING_LOCKED', 'DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
+  const debateStarted = ['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
+  const resultsComplete = Boolean(room.verdict) || status === 'RESULTS';
+
+  return [
+    stepState('Generate / Select Topic', !hasTopic || status === 'TOPIC_SELECTION', hasTopic, 'Set', 'Active', 'Next'),
+    stepState('Assign Debaters', hasTopic && !hasMarkets && !debatersConfirmed, hasDebaters, 'Assigned', 'Active', 'Next'),
+    stepState('Post Odds', hasDebaters && !hasMarkets && debatersConfirmed, hasMarkets, 'Posted', 'Active', 'Next'),
+    stepState('Betting Open', status === 'BETTING_OPEN', bettingComplete, 'Closed', 'Open', 'Queued'),
+    stepState('Start Debate', status === 'BETTING_LOCKED', debateStarted, 'Started', 'Starting', 'Queued'),
+    stepState('Results', status === 'JUDGING' || status === 'SETTLEMENT', resultsComplete, 'Complete', 'Judging', 'Pending'),
+  ];
+}
+
+function stepState(label, isCurrent, isComplete, completeText, currentText, upcomingText) {
+  const state = isCurrent ? 'current' : isComplete ? 'complete' : 'upcoming';
+  const status = state === 'current' ? currentText : state === 'complete' ? completeText : upcomingText;
+  return { label, state, status };
 }
 
 function topicHtml(room) {
@@ -183,8 +276,8 @@ function topicHtml(room) {
 }
 
 function debatersHtml(room) {
-  if (!room.debaters?.length) return `<section class="panel compact"><h3>Debaters</h3><p class="muted">Personas appear after topic selection.</p></section>`;
-  return `<section class="panel compact"><h3>Debaters</h3>${room.debaters.map((d) => `<article class="debater ${d.id}"><div class="side-label">${h(d.sideLabel)}</div><h4>${h(d.displayName)}</h4><div class="muted">${h(d.archetype)}</div><p>${h(d.tagline)}</p><div class="stance">${h(d.stance)}</div></article>`).join('')}</section>`;
+  if (!room.debaters?.length) return `<section class="panel compact player-seats"><div class="kicker">Table seats</div><h3>Debaters</h3><p class="muted">Personas appear after topic selection.</p></section>`;
+  return `<section class="panel compact player-seats"><div class="kicker">Table seats</div><h3>Debaters</h3>${room.debaters.map((d) => `<article class="debater ${d.id}"><div class="side-label">${h(d.sideLabel)}</div><h4>${h(d.displayName)}</h4><div class="muted">${h(d.archetype)}</div><p>${h(d.tagline)}</p><div class="stance">${h(d.stance)}</div></article>`).join('')}</section>`;
 }
 
 function transcriptHtml(room) {
@@ -217,9 +310,10 @@ function scoreCardHtml(debater, score = {}) {
 
 function sportsbookHtml(room, me) {
   const myBets = room.bets.filter((b) => b.userId === me?.id);
-  if (!room.markets?.length) return `<h3>Sportsbook</h3><p class="muted">The Oddsmaker has not posted lines yet.</p><p class="fineprint">Fake chips only. No cash value.</p>`;
+  if (!room.markets?.length) return `<div class="kicker">Sportsbook</div><h3>Betting window</h3><p class="muted">The Oddsmaker has not posted lines yet.</p><p class="fineprint">Fake chips only. No cash value.</p>`;
   return `
-    <h3>Sportsbook</h3>
+    <div class="kicker">Sportsbook</div>
+    <h3>Betting window</h3>
     <div class="bet-status ${room.status === 'BETTING_OPEN' ? 'open' : 'closed'}">${room.status === 'BETTING_OPEN' ? 'Betting open' : 'Betting locked / closed'}</div>
     <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'} />
     <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small>${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Bet</button></article>`).join('')}</div>
@@ -242,13 +336,13 @@ function hecklesHtml(room, me) {
 
 function leaderboardHtml(room) {
   const rows = room.settlements?.leaderboard || [...room.players].sort((a, b) => b.bankroll - a.bankroll || a.displayName.localeCompare(b.displayName)).map((p, idx) => ({ rank: idx + 1, userId: p.id, ...p }));
-  return `<section class="panel compact leaderboard"><h3>Leaderboard</h3><table><tbody>${rows.map((p) => `<tr class="${p.userId === state.session?.playerId || p.id === state.session?.playerId ? 'me-row' : ''}"><td>${h(p.rank)}</td><td>${h(p.displayName)}${p.isBot ? ' <span class="bot">bot</span>' : ''}</td><td>${chips(p.bankroll)}</td></tr>`).join('')}</tbody></table></section>`;
+  return `<section class="panel compact leaderboard"><div class="kicker">House board</div><h3>Leaderboard</h3><table><tbody>${rows.map((p) => `<tr class="${p.userId === state.session?.playerId || p.id === state.session?.playerId ? 'me-row' : ''}"><td>${h(p.rank)}</td><td>${h(p.displayName)}${p.isBot ? ' <span class="bot">bot</span>' : ''}</td><td>${chips(p.bankroll)}</td></tr>`).join('')}</tbody></table></section>`;
 }
 
 function hostControlsHtml(room) {
   const canEdit = !['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status) && !room.running;
   return `
-    <section class="host-controls panel">
+    <section class="host-controls pit-console">
       <div class="section-head"><div><div class="kicker">Host controls</div><h2>Pit boss console</h2></div><div class="button-row"><button data-action="quickDemo" class="primary" ${room.running ? 'disabled' : ''}>One-click demo round</button><button data-action="startDebate" ${room.status === 'BETTING_OPEN' && !room.running ? '' : 'disabled'}>Start debate</button><button data-action="resetRoom" ${room.running ? 'disabled' : ''}>Reset</button><button data-action="resetBankrolls" ${room.running ? 'disabled' : ''}>Reset bankrolls</button></div></div>
       <div class="host-grid">
         <div class="control-card"><h3>1. Topic</h3><textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canEdit ? '' : 'disabled'}></textarea><button data-action="generateTopics" ${canEdit ? '' : 'disabled'}>Generate topic candidates</button><label>Custom resolution</label><input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canEdit ? '' : 'disabled'} /><button data-action="setCustomTopic" ${canEdit ? '' : 'disabled'}>Use custom topic</button><div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · Comedy ${h(t.comedyPotential)}/10</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canEdit ? '' : 'disabled'}>Select</button></article>`).join('')}</div></div>
