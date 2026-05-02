@@ -220,7 +220,6 @@ function roomHtml(room) {
         </aside>
       </section>
       ${isHost ? hostControlsHtml(room) : ''}
-      ${commentaryHtml(room)}
     </main>`;
 }
 
@@ -294,7 +293,7 @@ function debatersHtml(room) {
 
 function transcriptHtml(room) {
   if (!room.turns?.length) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
-  return `<section class="transcript"><h3>Live transcript</h3>${room.turns.map((t) => `<article class="turn ${t.speakerDebaterId}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div><p>${h(t.text)}</p></article>`).join('')}</section>`;
+  return `<section class="transcript"><h3>Live transcript</h3>${room.turns.map((t) => `<article class="turn ${t.speakerDebaterId}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div>${formattedTextHtml(t.text)}</article>`).join('')}</section>`;
 }
 
 function verdictHtml(room) {
@@ -307,11 +306,63 @@ function verdictHtml(room) {
   return `
     <section class="verdict panel inset">
       <div class="winner-banner">${h(v.winnerName)} wins by ${h(v.margin)} margin</div>
-      <p>${h(v.verdict)}</p>
+      ${formattedTextHtml(v.verdict)}
       <div class="score-grid">${scoreCardHtml(room.debaters[0], v.scores?.debater_a)}${scoreCardHtml(room.debaters[1], v.scores?.debater_b)}</div>
-      <div class="callouts"><div><div class="kicker">Best line</div><blockquote>${h(v.bestLine?.quote || '')}</blockquote></div><div><div class="kicker">Worst argument</div><p>${h(v.worstArgument?.summary || '')}</p></div></div>
+      <div class="callouts"><div><div class="kicker">Best line</div><blockquote>${formattedTextHtml(v.bestLine?.quote || '')}</blockquote></div><div><div class="kicker">Worst argument</div>${formattedTextHtml(v.worstArgument?.summary || '')}</div></div>
       ${props ? `<h4>Prop settlement</h4><table><tbody>${props}</tbody></table>` : ''}
     </section>`;
+}
+
+function formattedTextHtml(text) {
+  const blocks = textBlocks(text);
+  if (!blocks.length) return '';
+  return `<div class="formatted-text">${blocks.map((block) => {
+    if (block.type === 'ol') return `<ol>${block.items.map((item) => `<li>${h(item)}</li>`).join('')}</ol>`;
+    if (block.type === 'ul') return `<ul>${block.items.map((item) => `<li>${h(item)}</li>`).join('')}</ul>`;
+    return `<p>${h(block.text)}</p>`;
+  }).join('')}</div>`;
+}
+
+function textBlocks(text) {
+  const normalized = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+(\d{1,2})[.)]\s+/g, '\n$1. ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!normalized) return [];
+  const lines = normalized.split('\n').map((line) => line.trim()).filter(Boolean);
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push({ type: 'p', text: paragraph.join(' ') });
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    blocks.push(list);
+    list = null;
+  };
+  for (const line of lines) {
+    const ordered = line.match(/^(\d{1,2})[.)]\s+(.+)$/);
+    const unordered = line.match(/^[-*]\s+(.+)$/);
+    if (ordered || unordered) {
+      flushParagraph();
+      const type = ordered ? 'ol' : 'ul';
+      if (!list || list.type !== type) {
+        flushList();
+        list = { type, items: [] };
+      }
+      list.items.push(ordered ? ordered[2] : unordered[1]);
+    } else {
+      flushList();
+      paragraph.push(line);
+    }
+  }
+  flushParagraph();
+  flushList();
+  return blocks;
 }
 
 function scoreCardHtml(debater, score = {}) {
@@ -378,11 +429,6 @@ function readabilityControlHtml(room, canEdit) {
 
 function personaSelectHtml(id, selected) {
   return `<label>${id === 'personaA' ? 'Debater A' : 'Debater B'}</label><select id="${id}">${state.personas.map((p) => `<option value="${h(p.id)}" ${selected === p.id ? 'selected' : ''}>${h(p.displayName)} — ${h(p.archetype)}</option>`).join('')}</select>`;
-}
-
-function commentaryHtml(room) {
-  if (!room.commentary?.length) return '';
-  return `<section class="commentary panel"><div class="kicker">Commentary ticker</div><div class="ticker-items">${room.commentary.slice(0, 10).map((c) => `<span>${h(c.text)}</span>`).join('')}</div></section>`;
 }
 
 function processingHtml(room) {

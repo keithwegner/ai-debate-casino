@@ -93,6 +93,18 @@ function cleanText(value, max = 800) {
   return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+function cleanRichText(value, max = 1400) {
+  return String(value || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, max)
+    .trim();
+}
+
 function cleanName(value) {
   return String(value || '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 32) || `Player ${Math.floor(Math.random() * 900 + 100)}`;
 }
@@ -133,7 +145,6 @@ function createRoom(hostName) {
     turns: [],
     verdict: null,
     settlements: null,
-    commentary: [],
     running: false,
     error: null,
     readabilityMode: 'classic',
@@ -149,9 +160,7 @@ function touch(room) {
   broadcast(room);
 }
 
-function pushComment(room, text) {
-  room.commentary.unshift({ id: id('c_'), at: now(), text: cleanText(text, 280) });
-  room.commentary = room.commentary.slice(0, 24);
+function pushComment(room) {
   touch(room);
 }
 
@@ -191,7 +200,6 @@ function publicRoom(room) {
     turns: room.turns,
     verdict: room.verdict,
     settlements: room.settlements,
-    commentary: room.commentary,
     running: room.running,
     error: room.error,
     heckleCards: HECKLE_CARDS,
@@ -773,7 +781,7 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle) {
     const transcript = room.turns.map((t) => `${t.phase} — ${t.speakerName}: ${t.text}`).join('\n\n') || '(No prior turns.)';
     const text = await openAIText({
       task: 'debate',
-      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
+      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
       user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
     });
@@ -785,7 +793,7 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle) {
 }
 
 function cleanupTurn(text, debater) {
-  let cleaned = cleanText(text, 1400).replace(/^\s*(opening statement|rebuttal|closing statement|cross-exam question|cross-exam answer)\s*:\s*/i, '');
+  let cleaned = cleanRichText(text, 1400).replace(/^\s*(opening statement|rebuttal|closing statement|cross-exam question|cross-exam answer)\s*:\s*/i, '');
   cleaned = cleaned.replace(new RegExp(`^${escapeRegExp(debater.displayName)}\\s*:\\s*`, 'i'), '');
   return cleaned || `${debater.displayName} pauses, adjusts the microphone, and accidentally makes the room more tense.`;
 }
@@ -893,9 +901,9 @@ function sanitizeVerdict(room, v) {
     margin: ['razor-thin', 'narrow', 'clear', 'landslide'].includes(v.margin) ? v.margin : 'narrow',
     confidence: clamp(Number(v.confidence || 0.72), 0, 1),
     scores: { debater_a: sanitizeScore(v.scores?.debater_a), debater_b: sanitizeScore(v.scores?.debater_b) },
-    bestLine: { debaterId: ['debater_a', 'debater_b'].includes(v.bestLine?.debaterId) ? v.bestLine.debaterId : winnerDebaterId, quote: cleanText(v.bestLine?.quote || findBestLine(room, winnerDebaterId), 280) },
-    worstArgument: { debaterId: ['debater_a', 'debater_b'].includes(v.worstArgument?.debaterId) ? v.worstArgument.debaterId : (winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a'), summary: cleanText(v.worstArgument?.summary || 'Overextended a premise without enough support.', 240) },
-    verdict: cleanText(v.verdict || `${winner.displayName} wins by narrow margin.`, 1400),
+    bestLine: { debaterId: ['debater_a', 'debater_b'].includes(v.bestLine?.debaterId) ? v.bestLine.debaterId : winnerDebaterId, quote: cleanRichText(v.bestLine?.quote || findBestLine(room, winnerDebaterId), 280) },
+    worstArgument: { debaterId: ['debater_a', 'debater_b'].includes(v.worstArgument?.debaterId) ? v.worstArgument.debaterId : (winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a'), summary: cleanRichText(v.worstArgument?.summary || 'Overextended a premise without enough support.', 240) },
+    verdict: cleanRichText(v.verdict || `${winner.displayName} wins by narrow margin.`, 1400),
     propResults: props.map((m) => {
       const found = Array.isArray(v.propResults) ? v.propResults.find((p) => p.marketId === m.id) : null;
       return { marketId: m.id, won: Boolean(found?.won), evidence: cleanText(found?.evidence || 'No decisive evidence found.', 220), confidence: clamp(Number(found?.confidence || 0.55), 0, 1) };
