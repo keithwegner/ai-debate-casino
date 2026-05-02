@@ -715,8 +715,7 @@ meter {
 
 .compact,
 .stage,
-.sportsbook,
-.commentary {
+.sportsbook {
   padding: 1rem;
 }
 
@@ -870,7 +869,35 @@ meter {
   margin-bottom: 0.55rem;
 }
 
-.turn p { margin-bottom: 0; }
+.formatted-text {
+  line-height: 1.58;
+}
+
+.formatted-text p {
+  margin: 0 0 0.82rem;
+}
+
+.formatted-text p:last-child,
+.formatted-text ol:last-child,
+.formatted-text ul:last-child {
+  margin-bottom: 0;
+}
+
+.formatted-text ol,
+.formatted-text ul {
+  margin: 0.75rem 0 0.9rem 1.35rem;
+  padding-left: 0.65rem;
+}
+
+.formatted-text li {
+  margin: 0.38rem 0;
+  padding-left: 0.18rem;
+}
+
+.formatted-text li::marker {
+  color: var(--crimson);
+  font-weight: 900;
+}
 
 .empty-state,
 .empty-transcript {
@@ -1161,29 +1188,6 @@ blockquote {
   line-height: 1.5;
 }
 
-.commentary {
-  margin-top: 1rem;
-  overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(255, 250, 240, 0.94), rgba(246, 224, 176, 0.9));
-}
-
-.ticker-items {
-  display: flex;
-  gap: 0.8rem;
-  overflow: auto;
-  padding-bottom: 0.15rem;
-}
-
-.ticker-items span {
-  white-space: nowrap;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0.45rem 0.7rem;
-  color: var(--ink-soft);
-  background: rgba(255, 253, 248, 0.76);
-}
-
 .muted { color: var(--muted); }
 .small { font-size: 0.82rem; }
 
@@ -1354,7 +1358,6 @@ blockquote {
   .compact,
   .stage,
   .sportsbook,
-  .commentary,
   .pit-console,
   .control-card {
     padding: 0.82rem;
