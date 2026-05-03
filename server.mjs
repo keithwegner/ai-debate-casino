@@ -34,13 +34,23 @@ const READABILITY_MODES = new Set(['classic', 'kids']);
 
 const PERSONAS = [
   { id: 'formal_logician', displayName: 'Professor Steelman', archetype: 'Formal Logician', tagline: 'Precise. Numbered. Slightly disappointed.', style: 'Structured, exacting, calm, logical, low-flash. Uses numbered premises and calls out sloppy inference.', strengths: ['logical coherence', 'topic control', 'fallacy detection'], weaknesses: ['low humor', 'can sound bloodless'] },
-  { id: 'chaos_gremlin', displayName: 'Chaos Gremlin', archetype: 'Chaos Gremlin', tagline: 'Turns metaphors into blunt instruments.', style: 'Funny, vivid, surprising, erratic but coherent enough to win. Uses absurd analogies and callbacks.', strengths: ['humor', 'originality', 'audience energy'], weaknesses: ['logic leakage', 'overextended metaphors'] },
-  { id: 'venture_capitalist', displayName: 'The Venture Capitalist', archetype: 'Venture Capitalist', tagline: 'Sees TAM in everything.', style: 'Market-driven, overconfident, fluent in moats, scale, incentives, TAM, exits, and optional reality.', strengths: ['framing', 'persuasion', 'business analogies'], weaknesses: ['buzzwords', 'unsupported extrapolation'] },
+  { id: 'chaos_gremlin', displayName: 'Bixby Bedlam', archetype: 'Chaos Gremlin', tagline: 'Turns metaphors into blunt instruments.', style: 'Funny, vivid, surprising, erratic but coherent enough to win. Uses absurd analogies and callbacks.', strengths: ['humor', 'originality', 'audience energy'], weaknesses: ['logic leakage', 'overextended metaphors'] },
+  { id: 'venture_capitalist', displayName: 'Blake Term Sheet', archetype: 'Venture Capitalist', tagline: 'Sees TAM in everything.', style: 'Market-driven, overconfident, fluent in moats, scale, incentives, TAM, exits, and optional reality.', strengths: ['framing', 'persuasion', 'business analogies'], weaknesses: ['buzzwords', 'unsupported extrapolation'] },
   { id: 'retired_admiral', displayName: 'Admiral Hardcastle', archetype: 'Retired Admiral', tagline: 'Every argument is a logistics problem.', style: 'Strategic, severe, disciplined, fond of military metaphors, allergic to ambiguity.', strengths: ['discipline', 'strategy', 'command presence'], weaknesses: ['over-militarizes simple issues', 'low whimsy'] },
   { id: 'corporate_lawyer', displayName: 'Counsel Grimshaw', archetype: 'Corporate Lawyer', tagline: 'Finds liability in oxygen.', style: 'Pedantic, risk-averse, dry, endlessly conditional. Weaponizes “it depends.”', strengths: ['risk spotting', 'precision', 'technical caveats'], weaknesses: ['joy suppression', 'analysis paralysis'] },
   { id: 'reddit_moderator', displayName: 'ModHammer42', archetype: 'Reddit Moderator', tagline: 'Flags weak arguments for rule violations.', style: 'Suspicious, nitpicky, skeptical, procedural. Demands evidence and detects bad faith everywhere.', strengths: ['inconsistency detection', 'skepticism', 'rebuttal'], weaknesses: ['pedantry', 'can miss the broader point'] },
-  { id: 'ancient_philosopher', displayName: 'The Ancient Philosopher', archetype: 'Ancient Philosopher', tagline: 'Makes dumb topics metaphysical.', style: 'Grand, abstract, dignified, cosmic. References virtue, telos, truth, civilization, and the polis.', strengths: ['depth', 'original framing', 'rhetoric'], weaknesses: ['abstraction', 'practical gaps'] },
+  { id: 'ancient_philosopher', displayName: 'Diogenes of Desk Snacks', archetype: 'Ancient Philosopher', tagline: 'Makes dumb topics metaphysical.', style: 'Grand, abstract, dignified, cosmic. References virtue, telos, truth, civilization, and the polis.', strengths: ['depth', 'original framing', 'rhetoric'], weaknesses: ['abstraction', 'practical gaps'] },
   { id: 'product_manager', displayName: 'Roadmap Rhonda', archetype: 'Product Manager', tagline: 'Aligns stakeholders with no survivors.', style: 'Reframes everything as user stories, metrics, adoption curves, and stakeholder alignment.', strengths: ['reframing', 'structure', 'user empathy theater'], weaknesses: ['corporate vapor', 'excessive prioritization language'] },
+  { id: 'spreadsheet_oracle', displayName: 'Tabitha Pivot', archetype: 'Spreadsheet Oracle', tagline: 'Can smell a hidden column from across the room.', style: 'Forensic, mystical, and extremely confident about conditional formatting. Treats every argument as a workbook with broken formulas.', strengths: ['pattern detection', 'numerical framing', 'quiet menace'], weaknesses: ['over-indexes on grids', 'assumes every human is a macro'] },
+  { id: 'sentient_vending_machine', displayName: 'Snacko-9000', archetype: 'Sentient Vending Machine', tagline: 'Dispenses snacks, threats, and exact change.', style: 'Mechanical, transactional, deadpan, and oddly tender about inventory management. Frames ethics as supply-chain optimization.', strengths: ['economic analogies', 'deadpan humor', 'resource logic'], weaknesses: ['limited emotional range', 'vend-cycle fatalism'] },
+  { id: 'cursed_intern', displayName: 'Evan, Possibly Haunted', archetype: 'Cursed Intern', tagline: 'Has three badges and no idea which building this is.', style: 'Nervous, hyper-observant, accidentally profound, and forever escalating small inconveniences into cosmic warnings.', strengths: ['detail recall', 'sympathy', 'unexpected insight'], weaknesses: ['panic spirals', 'weak closing confidence'] },
+  { id: 'suburban_warlord', displayName: 'Denise Cul-de-Sac', archetype: 'Suburban Warlord', tagline: 'Rules the HOA minutes like a battlefield map.', style: 'Polite, ruthless, procedural, and armed with laminated bylaws. Turns neighborly concerns into total strategic doctrine.', strengths: ['procedural control', 'social pressure', 'tactical framing'], weaknesses: ['pettiness', 'overuses neighborhood precedent'] },
+  { id: 'crypto_court_jester', displayName: 'Chainlink Chuckles', archetype: 'Crypto Court Jester', tagline: 'Laughs in tokenomics and exits through the gift shop.', style: 'Fast-talking, theatrical, meme-literate, and allergic to stable definitions. Converts every claim into a volatile asset.', strengths: ['momentum', 'novel analogies', 'audience chaos'], weaknesses: ['credibility dips', 'definition slippage'] },
+  { id: 'museum_docent_doom', displayName: 'Marjorie Plaquevoice', archetype: 'Museum Docent of Doom', tagline: 'Every exhibit label is an indictment.', style: 'Measured, ominous, historically grand, and devastatingly specific. Explains modern foolishness like a doomed civilization display.', strengths: ['historical framing', 'gravitas', 'dry wit'], weaknesses: ['slow windup', 'catastrophizes office supplies'] },
+  { id: 'weather_app_shaman', displayName: 'Doppler Debbie', archetype: 'Weather App Shaman', tagline: 'Predicts a 70% chance of rhetorical hail.', style: 'Forecast-driven, dramatic, and strangely empirical. Treats arguments as pressure systems and rebuttals as storm fronts.', strengths: ['prediction framing', 'vivid imagery', 'risk language'], weaknesses: ['meteorological overreach', 'dramatic alerts'] },
+  { id: 'powerpoint_necromancer', displayName: 'Deck Lazarus', archetype: 'PowerPoint Necromancer', tagline: 'Raises dead slides for one more quarterly review.', style: 'Corporate-occult, ceremonial, and unnervingly organized. Summons bullet points like spirits with action items.', strengths: ['structure', 'callback rituals', 'executive dread'], weaknesses: ['slide-deck fatalism', 'too many frameworks'] },
+  { id: 'elevator_philosopher', displayName: 'Otis the Eternal', archetype: 'Elevator Philosopher', tagline: 'Finds meaning between floors three and four.', style: 'Compact, reflective, awkwardly intimate, and obsessed with vertical metaphors. Makes small spaces feel like moral laboratories.', strengths: ['concise framing', 'existential humor', 'turning constraints into insight'], weaknesses: ['claustrophobic scope', 'overuses ascent/descent imagery'] },
+  { id: 'mall_santa_auditor', displayName: 'Claus Receivable', archetype: 'Mall Santa Auditor', tagline: 'Checks the naughty list twice for compliance gaps.', style: 'Jolly, suspicious, ledger-driven, and seasonal in ways nobody requested. Balances warmth with forensic accounting.', strengths: ['moral scoring', 'ledger logic', 'cheerful pressure'], weaknesses: ['holiday tunnel vision', 'over-counts minor sins'] },
 ];
 
 const SEED_TOPICS = [
@@ -115,10 +125,22 @@ function apiError(status, message) {
   return e;
 }
 
-function findPersona(value) {
+function normalizePersonaLabelPart(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/^the\s+/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function allPersonas(room = null) {
+  return [...PERSONAS, ...((room?.customPersonas || []))];
+}
+
+function findPersona(value, room = null) {
   if (!value) return null;
   const needle = String(value).toLowerCase();
-  return PERSONAS.find((p) => p.id === value || p.archetype.toLowerCase() === needle || p.displayName.toLowerCase() === needle) || null;
+  return allPersonas(room).find((p) => p.id === value || p.archetype.toLowerCase() === needle || p.displayName.toLowerCase() === needle) || null;
 }
 
 function createPlayer(name, isHost = false, isBot = false) {
@@ -139,6 +161,8 @@ function createRoom(hostName) {
     topics: [],
     topic: null,
     debaters: [],
+    customPersonas: [],
+    pendingCustomPersona: null,
     markets: [],
     bets: [],
     heckles: [],
@@ -194,6 +218,8 @@ function publicRoom(room) {
     topics: room.topics,
     topic: room.topic,
     debaters: room.debaters,
+    customPersonas: room.customPersonas || [],
+    pendingCustomPersona: room.pendingCustomPersona || null,
     markets: room.markets,
     bets: room.bets,
     heckles: room.heckles,
@@ -383,6 +409,40 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { room: publicRoom(room) });
     }
 
+    if (method === 'POST' && action === 'personas/custom') {
+      requireHost(req, room);
+      if (room.running || ['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status)) {
+        throw apiError(409, 'Custom debaters cannot be created while a debate is running.');
+      }
+      const body = await readJson(req);
+      const persona = await safeGenerateCustomPersona(room, body.name, body.profile ?? body.description);
+      room.pendingCustomPersona = persona;
+      pushComment(room, `${persona.displayName} is ready for host review.`);
+      return sendJson(res, 201, { persona, room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'personas/custom/accept') {
+      requireHost(req, room);
+      if (room.running || ['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status)) {
+        throw apiError(409, 'Custom debaters cannot be accepted while a debate is running.');
+      }
+      if (!room.pendingCustomPersona) throw apiError(400, 'No custom debater draft to accept.');
+      const persona = { ...room.pendingCustomPersona, id: uniquePersonaId(room, room.pendingCustomPersona.id) };
+      room.customPersonas.push(persona);
+      room.pendingCustomPersona = null;
+      pushComment(room, `${persona.displayName} joined the debater bench.`);
+      return sendJson(res, 200, { persona, room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'personas/custom/discard') {
+      requireHost(req, room);
+      if (!room.pendingCustomPersona) throw apiError(400, 'No custom debater draft to discard.');
+      const name = room.pendingCustomPersona.displayName;
+      room.pendingCustomPersona = null;
+      pushComment(room, `${name} left the draft board.`);
+      return sendJson(res, 200, { room: publicRoom(room) });
+    }
+
     if (method === 'POST' && action === 'odds') {
       requireHost(req, room);
       if (!room.topic) throw apiError(400, 'Select a topic first.');
@@ -477,15 +537,17 @@ function normalizeTopic(topic, i = 0) {
 }
 
 function assignDefaultDebaters(room) {
-  const a = findPersona(room.topic?.suggestedPersonas?.[0]) || PERSONAS[0];
-  const b = findPersona(room.topic?.suggestedPersonas?.[1]) || PERSONAS.find((p) => p.id !== a.id && p.id === 'chaos_gremlin') || PERSONAS[1];
+  const personas = allPersonas(room);
+  const a = findPersona(room.topic?.suggestedPersonas?.[0], room) || personas[0] || PERSONAS[0];
+  const b = findPersona(room.topic?.suggestedPersonas?.[1], room) || personas.find((p) => p.id !== a.id && p.id === 'chaos_gremlin') || personas.find((p) => p.id !== a.id) || PERSONAS[1];
   assignDebaters(room, a.id, b.id);
 }
 
 function assignDebaters(room, personaAId, personaBId) {
-  const a = findPersona(personaAId) || PERSONAS[0];
-  let b = findPersona(personaBId) || PERSONAS[1];
-  if (b.id === a.id) b = PERSONAS.find((p) => p.id !== a.id) || PERSONAS[1];
+  const personas = allPersonas(room);
+  const a = findPersona(personaAId, room) || personas[0] || PERSONAS[0];
+  let b = findPersona(personaBId, room) || personas.find((p) => p.id !== a.id) || PERSONAS[1];
+  if (b.id === a.id) b = personas.find((p) => p.id !== a.id) || PERSONAS[1];
   room.debaters = [makeDebater('debater_a', a, 'For', room.topic.sideA), makeDebater('debater_b', b, 'Against', room.topic.sideB)];
   touch(room);
 }
@@ -658,6 +720,8 @@ function resetRoom(room, keepBankroll = true) {
   room.topics = [];
   room.topic = null;
   room.debaters = [];
+  room.customPersonas = [];
+  room.pendingCustomPersona = null;
   room.markets = [];
   room.bets = [];
   room.heckles = [];
@@ -727,6 +791,123 @@ function looksUnsafe(text) {
 
 function topicSchema() {
   return { type: 'object', additionalProperties: false, properties: { id: { type: 'string' }, resolution: { type: 'string' }, sideA: { type: 'string' }, sideB: { type: 'string' }, category: { type: 'string' }, comedyPotential: { type: 'integer' }, safetyRating: { type: 'string' }, suggestedPersonas: { type: 'array', items: { type: 'string' } } }, required: ['id', 'resolution', 'sideA', 'sideB', 'category', 'comedyPotential', 'safetyRating', 'suggestedPersonas'] };
+}
+
+async function safeGenerateCustomPersona(room, rawName, rawProfile) {
+  const { name, profile } = validateCustomPersonaInput(rawName, rawProfile);
+  if (looksUnsafe(name) || looksUnsafe(profile)) throw apiError(400, 'Custom debater appears unsafe or not demo-friendly.');
+  if (MOCK_AI) return fallbackCustomPersona(room, name, profile);
+  try {
+    const parsed = await openAIStructured({
+      task: 'setup',
+      name: 'custom_debater_personality',
+      schema: customPersonaSchema(),
+      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one safe, ridiculous, playable debate persona from the submitted debater name and profile. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, explicit sexual content, real private people, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
+      user: JSON.stringify({ name, profile, existingPersonas: allPersonas(room).map((p) => ({ displayName: p.displayName, archetype: p.archetype })) }, null, 2),
+      maxOutputTokens: 900,
+    });
+    return sanitizeCustomPersona(room, name, profile, parsed);
+  } catch (e) {
+    console.error('Custom persona fallback:', e.message);
+    return fallbackCustomPersona(room, name, profile);
+  }
+}
+
+function validateCustomPersonaInput(rawName, rawProfile) {
+  const name = cleanText(rawName, 200);
+  const profile = cleanText(rawProfile, 1200);
+  if (name.length < 2 || name.length > 48) throw apiError(400, 'Debater name must be 2-48 characters.');
+  if (profile.length < 10 || profile.length > 600) throw apiError(400, 'Debater profile must be 10-600 characters.');
+  return { name, profile };
+}
+
+function customPersonaSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      archetype: { type: 'string' },
+      tagline: { type: 'string' },
+      style: { type: 'string' },
+      strengths: { type: 'array', items: { type: 'string' } },
+      weaknesses: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['archetype', 'tagline', 'style', 'strengths', 'weaknesses'],
+  };
+}
+
+function sanitizeCustomPersona(room, name, profile, raw) {
+  const fallback = fallbackCustomPersona(room, name, profile);
+  let archetype = cleanText(raw?.archetype, 64) || fallback.archetype;
+  if (normalizePersonaLabelPart(archetype) === normalizePersonaLabelPart(name)) archetype = fallback.archetype;
+  if (normalizePersonaLabelPart(archetype) === normalizePersonaLabelPart(name)) archetype = 'Audience Wildcard';
+  return {
+    id: uniquePersonaId(room, customPersonaIdBase(name, profile)),
+    displayName: name,
+    archetype,
+    tagline: cleanText(raw?.tagline, 120) || fallback.tagline,
+    style: cleanText(raw?.style, 420) || fallback.style,
+    strengths: sanitizePersonaList(raw?.strengths, fallback.strengths, 3),
+    weaknesses: sanitizePersonaList(raw?.weaknesses, fallback.weaknesses, 2),
+  };
+}
+
+function fallbackCustomPersona(room, name, profile) {
+  const seed = hashNumber(`${name}|${profile}`);
+  const archetypes = ['Parking Lot Prophet', 'Microwave Monarch', 'Budget Oracle', 'Snack Bar Absolutist', 'Calendar Warlord', 'Breakroom Theorist'];
+  const strengthBank = [
+    ['surprise framing', 'audience energy', 'memorable analogies'],
+    ['procedural traps', 'dry humor', 'topic control'],
+    ['practical examples', 'fast rebuttals', 'crowd sympathy'],
+    ['absurd confidence', 'callback discipline', 'comic escalation'],
+  ];
+  const weaknessBank = [
+    ['overcommits to the bit', 'logic can wobble'],
+    ['gets lost in side quests', 'too many invented rules'],
+    ['confuses confidence for evidence', 'occasionally grandstands'],
+    ['treats small details as destiny', 'under-explains obvious leaps'],
+  ];
+  const hint = cleanText(profile.replace(/[.!?].*$/, ''), 90).toLowerCase();
+  return {
+    id: uniquePersonaId(room, customPersonaIdBase(name, profile)),
+    displayName: name,
+    archetype: archetypes[seed % archetypes.length],
+    tagline: `${name} has entered with a theory nobody budgeted for.`,
+    style: `Ridiculous, committed, and debate-ready. Builds arguments from ${hint || 'the submitted profile'}, then escalates them into punchy claims, callbacks, and strangely usable logic.`,
+    strengths: strengthBank[seed % strengthBank.length],
+    weaknesses: weaknessBank[seed % weaknessBank.length],
+  };
+}
+
+function sanitizePersonaList(value, fallback, maxItems) {
+  const items = (Array.isArray(value) ? value : [])
+    .map((item) => cleanText(item, 48))
+    .filter(Boolean)
+    .slice(0, maxItems);
+  return items.length ? items : fallback.slice(0, maxItems);
+}
+
+function customPersonaIdBase(name, profile) {
+  const slug = slugify(name, 30) || 'custom_debater';
+  return `custom_${slug}_${hashNumber(`${name}|${profile}`).toString(36)}`;
+}
+
+function slugify(value, max = 40) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, max)
+    .replace(/_+$/g, '');
+}
+
+function uniquePersonaId(room, base) {
+  const used = new Set(allPersonas(room).map((p) => p.id));
+  let candidate = cleanText(base, 80).replace(/[^a-zA-Z0-9_-]/g, '_') || id('custom_');
+  const root = candidate;
+  let i = 2;
+  while (used.has(candidate)) candidate = `${root}_${i++}`;
+  return candidate;
 }
 
 async function safeGenerateOdds(room) {

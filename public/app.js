@@ -409,7 +409,7 @@ function hostControlsHtml(room) {
       <div class="section-head"><div><div class="kicker">Host controls</div><h2>Pit boss console</h2></div><div class="button-row"><button data-action="quickDemo" class="primary" ${room.running ? 'disabled' : ''}>One-click demo round</button><button data-action="startDebate" ${room.status === 'BETTING_OPEN' && !room.running ? '' : 'disabled'}>Start debate</button><button data-action="resetRoom" ${room.running ? 'disabled' : ''}>Reset</button><button data-action="resetBankrolls" ${room.running ? 'disabled' : ''}>Reset bankrolls</button></div></div>
       <div class="host-grid">
         <div class="control-card"><h3>1. Topic</h3><textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canEdit ? '' : 'disabled'}></textarea><button data-action="generateTopics" ${canEdit ? '' : 'disabled'}>Generate topic candidates</button><label>Custom resolution</label><input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canEdit ? '' : 'disabled'} /><button data-action="setCustomTopic" ${canEdit ? '' : 'disabled'}>Use custom topic</button><div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · Comedy ${h(t.comedyPotential)}/10</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canEdit ? '' : 'disabled'}>Select</button></article>`).join('')}</div></div>
-        <div class="control-card"><h3>2. Personas + odds</h3>${personaSelectHtml('personaA', room.debaters?.[0]?.personaId)}${personaSelectHtml('personaB', room.debaters?.[1]?.personaId)}<button data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button></div>
+        <div class="control-card"><h3>2. Personas + odds</h3>${personaSelectHtml('personaA', room.debaters?.[0]?.personaId, room)}${personaSelectHtml('personaB', room.debaters?.[1]?.personaId, room)}<button data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
         <div class="control-card"><h3>3. Run sheet</h3>${readabilityControlHtml(room, canEdit)}<ol><li>Generate/select a topic.</li><li>Assign personas.</li><li>Post fake-chip odds.</li><li>Let humans or demo bots bet.</li><li>Start debate.</li></ol><p class="fineprint">The one-click button handles all setup and starts the round.</p></div>
       </div>
     </section>`;
@@ -427,8 +427,37 @@ function readabilityControlHtml(room, canEdit) {
     </div>`;
 }
 
-function personaSelectHtml(id, selected) {
-  return `<label>${id === 'personaA' ? 'Debater A' : 'Debater B'}</label><select id="${id}">${state.personas.map((p) => `<option value="${h(p.id)}" ${selected === p.id ? 'selected' : ''}>${h(p.displayName)} — ${h(p.archetype)}</option>`).join('')}</select>`;
+function personaSelectHtml(id, selected, room) {
+  return `<label>${id === 'personaA' ? 'Debater A' : 'Debater B'}</label><select id="${id}">${personasForRoom(room).map((p) => `<option value="${h(p.id)}" ${selected === p.id ? 'selected' : ''}>${h(personaLabel(p))}</option>`).join('')}</select>`;
+}
+
+function personasForRoom(room) {
+  return [...state.personas, ...((room?.customPersonas || []))];
+}
+
+function personaLabel(persona) {
+  const displayName = String(persona?.displayName || '').trim();
+  const archetype = String(persona?.archetype || '').trim();
+  if (!archetype || normalizePersonaLabelPart(displayName) === normalizePersonaLabelPart(archetype)) return displayName || archetype;
+  return `${displayName} — ${archetype}`;
+}
+
+function customPersonaDraftHtml(persona, canEdit) {
+  if (!persona) return '';
+  return `
+    <article class="custom-debater-draft">
+      <div class="kicker">Draft review</div>
+      <h4>${h(personaLabel(persona))}</h4>
+      <p>${h(persona.tagline || '')}</p>
+      <div class="draft-field"><strong>Style</strong><span>${h(persona.style || '')}</span></div>
+      <div class="draft-field"><strong>Strengths</strong><span>${h((persona.strengths || []).join(', '))}</span></div>
+      <div class="draft-field"><strong>Weaknesses</strong><span>${h((persona.weaknesses || []).join(', '))}</span></div>
+      <div class="button-row draft-actions"><button data-action="acceptCustomDebater" ${canEdit ? '' : 'disabled'}>Accept debater</button><button data-action="discardCustomDebater" ${canEdit ? '' : 'disabled'}>Discard</button></div>
+    </article>`;
+}
+
+function normalizePersonaLabelPart(value) {
+  return String(value || '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function processingHtml(room) {
@@ -534,6 +563,8 @@ async function handleAction(action, payload = {}) {
   const inputs = {
     topicPrompt: document.getElementById('topicPrompt')?.value || '',
     customTopic: document.getElementById('customTopic')?.value || '',
+    customPersonaName: document.getElementById('customPersonaName')?.value || '',
+    customPersonaProfile: document.getElementById('customPersonaProfile')?.value || '',
     personaAId: document.getElementById('personaA')?.value,
     personaBId: document.getElementById('personaB')?.value,
     betAmount: Number(document.getElementById('betAmount')?.value || 100),
@@ -546,6 +577,19 @@ async function handleAction(action, payload = {}) {
       case 'setCustomTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { customTopic: inputs.customTopic } }); state.message = 'Custom topic selected.'; break;
       case 'setReadability': data = await api(`${roomPath}/readability`, { method: 'POST', host: true, body: { mode: payload.mode } }); state.message = `Audience set to ${payload.mode === 'kids' ? 'Kids' : 'Classic'}.`; break;
       case 'setPersonas': data = await api(`${roomPath}/personas`, { method: 'POST', host: true, body: { personaAId: inputs.personaAId, personaBId: inputs.personaBId } }); state.message = 'Debaters assigned.'; break;
+      case 'createCustomDebater':
+        validateCustomDebaterInputs(inputs.customPersonaName, inputs.customPersonaProfile);
+        data = await api(`${roomPath}/personas/custom`, { method: 'POST', host: true, body: { name: inputs.customPersonaName, profile: inputs.customPersonaProfile } });
+        state.message = `${data.persona?.displayName || 'Custom debater'} draft generated.`;
+        break;
+      case 'acceptCustomDebater':
+        data = await api(`${roomPath}/personas/custom/accept`, { method: 'POST', host: true, body: {} });
+        state.message = `${data.persona?.displayName || 'Custom debater'} accepted.`;
+        break;
+      case 'discardCustomDebater':
+        data = await api(`${roomPath}/personas/custom/discard`, { method: 'POST', host: true, body: {} });
+        state.message = 'Custom debater draft discarded.';
+        break;
       case 'postOdds': data = await api(`${roomPath}/odds`, { method: 'POST', host: true, body: {} }); state.message = 'Odds posted.'; break;
       case 'demoFill': data = await api(`${roomPath}/demo-fill`, { method: 'POST', host: true, body: {} }); state.message = 'Demo audience added.'; break;
       case 'quickDemo': data = await api(`${roomPath}/quick-demo`, { method: 'POST', host: true, body: {} }); state.message = 'One-click demo started.'; break;
@@ -558,6 +602,13 @@ async function handleAction(action, payload = {}) {
     }
     if (data?.room) state.room = data.room;
   });
+}
+
+function validateCustomDebaterInputs(name, profile) {
+  const cleanName = String(name || '').replace(/\s+/g, ' ').trim();
+  const cleanProfile = String(profile || '').replace(/\s+/g, ' ').trim();
+  if (cleanName.length < 2 || cleanName.length > 48) throw new Error('Debater name must be 2-48 characters.');
+  if (cleanProfile.length < 10 || cleanProfile.length > 600) throw new Error('Debater profile must be 10-600 characters.');
 }
 
 function markPendingControls() {
@@ -583,6 +634,9 @@ function actionLabel(action) {
     setCustomTopic: 'Normalizing topic',
     setReadability: 'Updating audience',
     setPersonas: 'Assigning debaters',
+    createCustomDebater: 'Generating draft',
+    acceptCustomDebater: 'Accepting debater',
+    discardCustomDebater: 'Discarding draft',
     postOdds: 'Posting odds',
     demoFill: 'Adding demo audience',
     quickDemo: 'Starting demo round',
