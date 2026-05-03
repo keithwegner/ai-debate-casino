@@ -993,6 +993,12 @@ meter {
   background: rgba(179, 39, 53, 0.08);
 }
 
+.source-chip.streaming {
+  color: #65460f;
+  border-color: rgba(218, 162, 54, 0.44);
+  background: rgba(218, 162, 54, 0.16);
+}
+
 .transcript {
   margin-top: 1rem;
 }
@@ -1012,6 +1018,31 @@ meter {
   margin-bottom: 0.82rem;
   box-shadow: 0 10px 24px rgba(4, 55, 45, 0.18);
   animation: rise 0.22s ease-out;
+}
+
+.streaming-turn {
+  box-shadow: 0 12px 30px rgba(218, 162, 54, 0.18), 0 10px 24px rgba(4, 55, 45, 0.18);
+}
+
+.streaming-turn .formatted-text p:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.55ch;
+  height: 1em;
+  margin-left: 0.12rem;
+  transform: translateY(0.14em);
+  border-right: 2px solid rgba(101, 70, 15, 0.72);
+  animation: cursorBlink 0.8s steps(2, start) infinite;
+}
+
+.typing-placeholder {
+  margin: 0;
+  color: rgba(83, 55, 24, 0.62);
+  font-weight: 800;
+}
+
+@keyframes cursorBlink {
+  50% { opacity: 0; }
 }
 
 @keyframes rise {

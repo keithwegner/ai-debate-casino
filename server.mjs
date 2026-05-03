@@ -26,6 +26,11 @@ const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 90000);
 const DEBATE_SCRIPT = String(process.env.DEBATE_SCRIPT || 'full').toLowerCase();
 const HUMAN_TURN_TIMEOUT_MS_RAW = Number(process.env.HUMAN_TURN_TIMEOUT_MS || 90000);
 const HUMAN_TURN_TIMEOUT_MS = Number.isFinite(HUMAN_TURN_TIMEOUT_MS_RAW) ? Math.max(200, HUMAN_TURN_TIMEOUT_MS_RAW) : 90000;
+const TRANSCRIPT_STREAM_CPS_RAW = Number(process.env.TRANSCRIPT_STREAM_CPS || 35);
+const TRANSCRIPT_STREAM_CPS = Number.isFinite(TRANSCRIPT_STREAM_CPS_RAW) ? Math.max(1, TRANSCRIPT_STREAM_CPS_RAW) : 35;
+const DEBATE_BOT_PAUSE_MS_RAW = Number(process.env.DEBATE_BOT_PAUSE_MS || 3000);
+const DEBATE_BOT_PAUSE_MS = Number.isFinite(DEBATE_BOT_PAUSE_MS_RAW) ? Math.max(0, DEBATE_BOT_PAUSE_MS_RAW) : 3000;
+const STREAM_TICK_MS = 140;
 const MOCK_REQUESTED = process.env.MOCK_AI === 'true';
 const MOCK_AI = MOCK_REQUESTED || !OPENAI_KEY_STATUS.usable;
 const MOCK_REASON = MOCK_REQUESTED ? 'MOCK_AI=true' : OPENAI_KEY_STATUS.reason;
@@ -170,6 +175,7 @@ function createRoom(hostName) {
     bets: [],
     heckles: [],
     turns: [],
+    streamingTurn: null,
     pendingHumanTurn: null,
     verdict: null,
     settlements: null,
@@ -217,6 +223,8 @@ function publicRoom(room) {
       debateModel: MOCK_AI ? 'mock' : MODEL_DEBATE,
       judgeModel: MOCK_AI ? 'mock' : MODEL_JUDGE,
       debateScript: DEBATE_SCRIPT === 'fast' ? 'fast' : 'full',
+      transcriptStreamCps: TRANSCRIPT_STREAM_CPS,
+      botPauseMs: DEBATE_BOT_PAUSE_MS,
     },
     players: room.players.map((p) => ({ ...p })),
     topics: room.topics,
@@ -228,6 +236,7 @@ function publicRoom(room) {
     bets: room.bets,
     heckles: room.heckles,
     turns: room.turns,
+    streamingTurn: room.streamingTurn ? { ...room.streamingTurn } : null,
     pendingHumanTurn: room.pendingHumanTurn ? { ...room.pendingHumanTurn } : null,
     verdict: room.verdict,
     settlements: room.settlements,
@@ -290,6 +299,8 @@ function healthPayload() {
     debateScript: DEBATE_SCRIPT === 'fast' ? 'fast' : 'full',
     timeoutMs: OPENAI_TIMEOUT_MS,
     humanTurnTimeoutMs: HUMAN_TURN_TIMEOUT_MS,
+    transcriptStreamCps: TRANSCRIPT_STREAM_CPS,
+    debateBotPauseMs: DEBATE_BOT_PAUSE_MS,
   };
 }
 
@@ -393,6 +404,7 @@ async function handleApi(req, res, url) {
       room.markets = [];
       room.bets = [];
       room.turns = [];
+      room.streamingTurn = null;
       room.verdict = null;
       room.settlements = null;
       room.heckles = room.heckles.filter((h) => h.status === 'spent');
@@ -647,6 +659,7 @@ function humanDebaterForPlayer(room, playerId) {
 async function postOdds(room) {
   room.markets = await safeGenerateOdds(room);
   room.bets = [];
+  room.streamingTurn = null;
   room.verdict = null;
   room.settlements = null;
   setPhase(room, 'BETTING_OPEN', 'Betting open');
@@ -712,6 +725,7 @@ function startDebate(room) {
   if (room.running) return;
   room.running = true;
   room.error = null;
+  room.streamingTurn = null;
   clearPendingHumanTurn(room);
   setPhase(room, 'BETTING_LOCKED', 'Bets locked');
   pushComment(room, 'Bets are locked. The bell rings.');
@@ -729,7 +743,7 @@ function startDebate(room) {
 
 async function collectDebateTurn(room, phase, debater, heckle) {
   if (debater.kind !== 'human') {
-    return { text: await safeGenerateDebateTurn(room, phase, debater, heckle), source: 'ai', timeoutFilled: false };
+    return streamDebateTurn(room, phase, debater, heckle, { source: 'ai', timeoutFilled: false });
   }
   return waitForHumanTurn(room, phase, debater, heckle);
 }
@@ -763,8 +777,7 @@ function waitForHumanTurn(room, phase, debater, heckle) {
       humanTurnWaiters.delete(pending.id);
       latest.pendingHumanTurn = null;
       touch(latest);
-      const text = await safeGenerateDebateTurn(latest, phase, debater, heckle);
-      resolve({ text, source: 'ai_timeout', timeoutFilled: true });
+      resolve(await streamDebateTurn(latest, phase, debater, heckle, { source: 'ai_timeout', timeoutFilled: true }));
     }, HUMAN_TURN_TIMEOUT_MS);
     humanTurnWaiters.set(pending.id, { resolve, timeout });
   });
@@ -805,16 +818,136 @@ function clearPendingHumanTurn(room, result = null) {
   room.pendingHumanTurn = null;
 }
 
+async function streamDebateTurn(room, phase, debater, heckle, options = {}) {
+  const source = options.source || 'ai';
+  const timeoutFilled = Boolean(options.timeoutFilled);
+  const streamingTurn = {
+    id: id('turn_'),
+    phase: phase.phase,
+    speakerDebaterId: debater.id,
+    speakerName: debater.displayName,
+    persona: debater.archetype,
+    sideLabel: debater.sideLabel,
+    heckleId: heckle?.id || null,
+    heckleLabel: heckle?.label || null,
+    text: '',
+    source,
+    timeoutFilled,
+    streaming: true,
+    startedAt: now(),
+  };
+  room.streamingTurn = streamingTurn;
+  touch(room);
+
+  const writer = createStreamingTurnWriter(room.id, streamingTurn.id);
+  let finalText = '';
+  try {
+    finalText = await safeGenerateDebateTurn(room, phase, debater, heckle, writer);
+    finalText = cleanupTurn(finalText, debater);
+    await writer.finish(finalText);
+  } catch (e) {
+    console.error('Streaming debate fallback:', e.message);
+    writer.reset();
+    finalText = mockDebateTurn(room, phase, debater, heckle);
+    await writer.finish(finalText);
+  }
+
+  const latest = rooms.get(room.id);
+  if (latest?.streamingTurn?.id === streamingTurn.id) {
+    latest.streamingTurn = null;
+    touch(latest);
+  }
+  return { text: finalText, source, timeoutFilled, turnId: streamingTurn.id, createdAt: now() };
+}
+
+function createStreamingTurnWriter(roomId, turnId) {
+  let visible = '';
+  let queued = '';
+  let timer = null;
+  let finishRequested = false;
+  let finishText = '';
+  let finished = false;
+  let resolveFinished = null;
+  const charsPerTick = Math.max(1, Math.ceil((TRANSCRIPT_STREAM_CPS * STREAM_TICK_MS) / 1000));
+
+  const clearTimer = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+  };
+
+  const updateVisibleText = (text) => {
+    const room = rooms.get(roomId);
+    if (!room?.streamingTurn || room.streamingTurn.id !== turnId) return false;
+    room.streamingTurn.text = text;
+    touch(room);
+    return true;
+  };
+
+  const finishIfDrained = () => {
+    if (!finishRequested || queued.length || finished) return;
+    visible = finishText || visible;
+    updateVisibleText(visible);
+    finished = true;
+    clearTimer();
+    resolveFinished?.();
+  };
+
+  const tick = () => {
+    if (queued.length) {
+      visible += queued.slice(0, charsPerTick);
+      queued = queued.slice(charsPerTick);
+      updateVisibleText(visible);
+    }
+    finishIfDrained();
+  };
+
+  const ensureTimer = () => {
+    if (!timer && !finished) timer = setInterval(tick, STREAM_TICK_MS);
+  };
+
+  return {
+    append(text) {
+      const chunk = String(text || '');
+      if (!chunk || finished) return;
+      queued += chunk;
+      ensureTimer();
+    },
+    reset() {
+      visible = '';
+      queued = '';
+      finishRequested = false;
+      finishText = '';
+      finished = false;
+      updateVisibleText('');
+      clearTimer();
+    },
+    finish(finalText) {
+      finishRequested = true;
+      finishText = cleanRichText(finalText, 1400);
+      if (!queued.length) {
+        finishIfDrained();
+        return Promise.resolve();
+      }
+      ensureTimer();
+      return new Promise((resolve) => {
+        resolveFinished = resolve;
+      });
+    },
+  };
+}
+
 async function runDebate(roomId) {
   const phases = debatePhases();
   let room = requireRoom(roomId);
   room.turns = [];
+  room.streamingTurn = null;
   room.pendingHumanTurn = null;
   room.verdict = null;
   room.settlements = null;
   touch(room);
 
-  for (const phase of phases) {
+  for (let phaseIndex = 0; phaseIndex < phases.length; phaseIndex += 1) {
+    const phase = phases[phaseIndex];
     room = requireRoom(roomId);
     const debater = room.debaters.find((d) => d.id === phase.speakerId);
     if (!debater) throw apiError(500, `Missing debater for ${phase.speakerId}.`);
@@ -826,17 +959,19 @@ async function runDebate(roomId) {
     setPhase(room, 'DEBATE', `${phase.phase}: ${debater.displayName}`);
     const result = await collectDebateTurn(room, phase, debater, heckle || null);
     if (result.cancelled) return;
-    const turn = { id: id('turn_'), phase: phase.phase, speakerDebaterId: debater.id, speakerName: debater.displayName, persona: debater.archetype, sideLabel: debater.sideLabel, heckleId: heckle?.id || null, heckleLabel: heckle?.label || null, text: result.text, source: result.source, timeoutFilled: Boolean(result.timeoutFilled), createdAt: now() };
+    const turn = { id: result.turnId || id('turn_'), phase: phase.phase, speakerDebaterId: debater.id, speakerName: debater.displayName, persona: debater.archetype, sideLabel: debater.sideLabel, heckleId: heckle?.id || null, heckleLabel: heckle?.label || null, text: result.text, source: result.source, timeoutFilled: Boolean(result.timeoutFilled), createdAt: result.createdAt || now() };
     room.turns.push(turn);
     if (heckle) {
       heckle.status = 'used';
       heckle.usedTurnId = turn.id;
     }
     pushComment(room, `${debater.displayName} completed ${phase.phase.toLowerCase()}.`);
-    await sleep(500);
+    const nextDebater = room.debaters.find((d) => d.id === phases[phaseIndex + 1]?.speakerId);
+    await sleep(debater.kind !== 'human' && nextDebater?.kind !== 'human' ? DEBATE_BOT_PAUSE_MS : Math.min(500, DEBATE_BOT_PAUSE_MS));
   }
 
   room = requireRoom(roomId);
+  room.streamingTurn = null;
   setPhase(room, 'JUDGING', 'Judge deliberation');
   pushComment(room, 'The Judge has taken the transcript under theatrical advisement.');
   room.verdict = await safeJudgeDebate(room);
@@ -898,6 +1033,7 @@ function resetRoom(room, keepBankroll = true) {
   room.bets = [];
   room.heckles = [];
   room.turns = [];
+  room.streamingTurn = null;
   room.pendingHumanTurn = null;
   room.verdict = null;
   room.settlements = null;
@@ -1128,23 +1264,31 @@ function fallbackMarkets(room) {
   ];
 }
 
-async function safeGenerateDebateTurn(room, phase, debater, heckle) {
-  if (MOCK_AI) return mockDebateTurn(room, phase, debater, heckle);
+async function safeGenerateDebateTurn(room, phase, debater, heckle, writer = null) {
+  if (MOCK_AI) {
+    const text = mockDebateTurn(room, phase, debater, heckle);
+    writer?.append(text);
+    return text;
+  }
   try {
     const opponent = room.debaters.find((d) => d.id !== debater.id);
     const transcript = transcriptForPrompt(room);
     const latestOpponent = latestTurnForDebater(room, opponent?.id);
     const latestOpponentAnalysis = analyzeArgumentText(latestOpponent?.text || '');
-    const text = await openAIText({
+    const request = {
       task: 'debate',
       system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
       user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Opponent's latest turn:\n${latestOpponent ? `${latestOpponent.phase} — ${latestOpponent.speakerName}: ${latestOpponent.text}` : '(No opponent turn yet.)'}`, `Opponent latest-turn quality: ${latestOpponentAnalysis.label}. ${latestOpponentAnalysis.reason}`, `Required response behavior: directly answer the opponent's latest reasoning when it exists. If the latest turn is thin, call that out briefly and build a stronger positive case.`, `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
-    });
+    };
+    const text = writer ? await openAITextStream({ ...request, onDelta: (delta) => writer.append(delta), onReset: () => writer.reset() }) : await openAIText(request);
     return cleanupTurn(text, debater);
   } catch (e) {
     console.error('Debate fallback:', e.message);
-    return mockDebateTurn(room, phase, debater, heckle);
+    const text = mockDebateTurn(room, phase, debater, heckle);
+    writer?.reset();
+    writer?.append(text);
+    return text;
   }
 }
 
@@ -1477,6 +1621,21 @@ async function openAIText({ task, system, user, maxOutputTokens = 600 }) {
   return text;
 }
 
+async function openAITextStream({ task, system, user, maxOutputTokens = 600, onDelta, onReset }) {
+  const body = { input: [{ role: 'developer', content: system }, { role: 'user', content: user }], max_output_tokens: maxOutputTokens, store: false };
+  let result = await openAIStreamRequest(task, body, onDelta);
+  if (ranOutOfOutputBudget(result.data)) {
+    onReset?.();
+    const retryMax = expandedOutputBudget(task, maxOutputTokens);
+    console.warn(`Retrying streamed OpenAI ${task} request with larger max_output_tokens=${retryMax}; previous response ended before visible output.`);
+    result = await openAIStreamRequest(task, body, onDelta, retryMax);
+  }
+  if (ranOutOfOutputBudget(result.data)) throw new Error(describeEmptyOutput(result.data));
+  const text = cleanRichText(result.text || extractOutputText(result.data), 1400);
+  if (!text) throw new Error(describeEmptyOutput(result.data));
+  return text;
+}
+
 async function openAIStructured({ task, name, schema, system, user, maxOutputTokens = 1200 }) {
   const data = await openAIRequest(task, { input: [{ role: 'developer', content: system }, { role: 'user', content: user }], text: { format: { type: 'json_schema', name, strict: true, schema } }, max_output_tokens: maxOutputTokens, store: false });
   const text = extractOutputText(data);
@@ -1522,6 +1681,60 @@ async function openAIRequest(task, body) {
   }
   if (ranOutOfOutputBudget(result.data)) throw new Error(describeEmptyOutput(result.data));
   return result.data;
+}
+
+async function openAIStreamRequest(task, body, onDelta, overrideMaxOutputTokens = body.max_output_tokens) {
+  const { model, effort } = taskModel(task);
+  const makeBody = (includeReasoning = true) => JSON.stringify({ model, ...body, max_output_tokens: overrideMaxOutputTokens, stream: true, reasoning: includeReasoning && effort && effort !== 'none' ? { effort } : undefined });
+  const send = async (includeReasoning = true) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' }, body: makeBody(includeReasoning), signal: controller.signal });
+      if (!response.ok) return { response, errorText: await response.text(), data: null, text: '' };
+      const parsed = await parseOpenAIEventStream(response, onDelta);
+      return { response, errorText: '', ...parsed };
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+  let result = await send(true);
+  if (!result.response.ok && effort && effort !== 'none') {
+    console.warn('Retrying streamed OpenAI request without reasoning parameter:', result.errorText.slice(0, 300));
+    result = await send(false);
+  }
+  if (!result.response.ok) throw new Error(`OpenAI API error ${result.response.status}: ${result.errorText.slice(0, 800)}`);
+  return result;
+}
+
+async function parseOpenAIEventStream(response, onDelta) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let collected = '';
+  let finalData = null;
+  const processRecord = (record) => {
+    const data = record.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n').trim();
+    if (!data || data === '[DONE]') return;
+    let event;
+    try { event = JSON.parse(data); } catch { return; }
+    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+      collected += event.delta;
+      onDelta?.(event.delta);
+      return;
+    }
+    if (event.type === 'response.completed') finalData = event.response || event;
+    if (event.type === 'response.failed' || event.type === 'error') throw new Error(event.error?.message || 'OpenAI stream failed.');
+  };
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const records = buffer.split(/\r?\n\r?\n/);
+    buffer = records.pop() || '';
+    for (const record of records) processRecord(record);
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) processRecord(buffer);
+  return { data: finalData, text: collected };
 }
 
 function ranOutOfOutputBudget(data) {
