@@ -24,12 +24,15 @@ const EFFORT_DEBATE = process.env.OPENAI_REASONING_DEBATE || EFFORT_DEFAULT;
 const EFFORT_JUDGE = process.env.OPENAI_REASONING_JUDGE || EFFORT_DEFAULT;
 const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 90000);
 const DEBATE_SCRIPT = String(process.env.DEBATE_SCRIPT || 'full').toLowerCase();
+const HUMAN_TURN_TIMEOUT_MS_RAW = Number(process.env.HUMAN_TURN_TIMEOUT_MS || 90000);
+const HUMAN_TURN_TIMEOUT_MS = Number.isFinite(HUMAN_TURN_TIMEOUT_MS_RAW) ? Math.max(200, HUMAN_TURN_TIMEOUT_MS_RAW) : 90000;
 const MOCK_REQUESTED = process.env.MOCK_AI === 'true';
 const MOCK_AI = MOCK_REQUESTED || !OPENAI_KEY_STATUS.usable;
 const MOCK_REASON = MOCK_REQUESTED ? 'MOCK_AI=true' : OPENAI_KEY_STATUS.reason;
 
 const rooms = new Map();
 const subscribers = new Map();
+const humanTurnWaiters = new Map();
 const READABILITY_MODES = new Set(['classic', 'kids']);
 
 const PERSONAS = [
@@ -167,6 +170,7 @@ function createRoom(hostName) {
     bets: [],
     heckles: [],
     turns: [],
+    pendingHumanTurn: null,
     verdict: null,
     settlements: null,
     running: false,
@@ -224,6 +228,7 @@ function publicRoom(room) {
     bets: room.bets,
     heckles: room.heckles,
     turns: room.turns,
+    pendingHumanTurn: room.pendingHumanTurn ? { ...room.pendingHumanTurn } : null,
     verdict: room.verdict,
     settlements: room.settlements,
     running: room.running,
@@ -284,6 +289,7 @@ function healthPayload() {
     reasoning: { setup: EFFORT_SETUP, debate: EFFORT_DEBATE, judge: EFFORT_JUDGE },
     debateScript: DEBATE_SCRIPT === 'fast' ? 'fast' : 'full',
     timeoutMs: OPENAI_TIMEOUT_MS,
+    humanTurnTimeoutMs: HUMAN_TURN_TIMEOUT_MS,
   };
 }
 
@@ -400,8 +406,22 @@ async function handleApi(req, res, url) {
     if (method === 'POST' && action === 'personas') {
       requireHost(req, room);
       if (!room.topic) throw apiError(400, 'Select a topic first.');
+      assertDebaterEditAllowed(room);
       const body = await readJson(req);
       assignDebaters(room, body.personaAId, body.personaBId);
+      room.markets = [];
+      room.bets = [];
+      setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
+      pushComment(room, `${room.debaters[0].displayName} and ${room.debaters[1].displayName} entered the arena.`);
+      return sendJson(res, 200, { room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'debaters') {
+      requireHost(req, room);
+      if (!room.topic) throw apiError(400, 'Select a topic first.');
+      assertDebaterEditAllowed(room);
+      const body = await readJson(req);
+      assignMixedDebaters(room, body.debaterA, body.debaterB);
       room.markets = [];
       room.bets = [];
       setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
@@ -462,6 +482,12 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const bet = placeBet(room, body.playerId, body.marketId, body.amount);
       return sendJson(res, 201, { bet, room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'turns/human') {
+      const body = await readJson(req);
+      submitHumanTurn(room, body.playerId, body.pendingTurnId, body.text);
+      return sendJson(res, 202, { accepted: true, room: publicRoom(room) });
     }
 
     if (method === 'POST' && action === 'heckles') {
@@ -543,17 +569,79 @@ function assignDefaultDebaters(room) {
   assignDebaters(room, a.id, b.id);
 }
 
+function assertDebaterEditAllowed(room) {
+  if (room.running || ['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status)) {
+    throw apiError(409, 'Debaters cannot be changed while a debate is running.');
+  }
+}
+
 function assignDebaters(room, personaAId, personaBId) {
   const personas = allPersonas(room);
   const a = findPersona(personaAId, room) || personas[0] || PERSONAS[0];
   let b = findPersona(personaBId, room) || personas.find((p) => p.id !== a.id) || PERSONAS[1];
   if (b.id === a.id) b = personas.find((p) => p.id !== a.id) || PERSONAS[1];
   room.debaters = [makeDebater('debater_a', a, 'For', room.topic.sideA), makeDebater('debater_b', b, 'Against', room.topic.sideB)];
+  clearPendingHumanTurn(room);
   touch(room);
 }
 
+function assignMixedDebaters(room, rawA, rawB) {
+  const slotA = normalizeDebaterSlot(rawA);
+  const slotB = normalizeDebaterSlot(rawB);
+  const slots = [slotA, slotB];
+  const humanCount = slots.filter((slot) => slot.kind === 'human').length;
+  const aiCount = slots.filter((slot) => slot.kind === 'ai').length;
+  if (humanCount !== 1 || aiCount !== 1) throw apiError(400, 'Human debate mode requires exactly one lobby player and one AI debater.');
+  room.debaters = [
+    makeDebaterFromSlot(room, 'debater_a', slotA, 'For', room.topic.sideA),
+    makeDebaterFromSlot(room, 'debater_b', slotB, 'Against', room.topic.sideB),
+  ];
+  clearPendingHumanTurn(room);
+  touch(room);
+}
+
+function normalizeDebaterSlot(raw) {
+  if (!raw || typeof raw !== 'object') throw apiError(400, 'Each debater slot must include a kind.');
+  const kind = String(raw.kind || '').trim().toLowerCase();
+  if (kind === 'ai') return { kind, personaId: cleanText(raw.personaId, 100) };
+  if (kind === 'human') return { kind, playerId: cleanText(raw.playerId, 100) };
+  throw apiError(400, 'Debater kind must be ai or human.');
+}
+
+function makeDebaterFromSlot(room, id, slot, sideLabel, stance) {
+  if (slot.kind === 'ai') {
+    const persona = findPersona(slot.personaId, room);
+    if (!persona) throw apiError(400, 'AI debater persona was not found.');
+    return makeDebater(id, persona, sideLabel, stance);
+  }
+  const player = room.players.find((p) => p.id === slot.playerId && !p.isBot);
+  if (!player) throw apiError(400, 'Human debater must be a lobby player.');
+  return makeHumanDebater(id, player, sideLabel, stance);
+}
+
 function makeDebater(id, persona, sideLabel, stance) {
-  return { id, personaId: persona.id, displayName: persona.displayName, archetype: persona.archetype, tagline: persona.tagline, style: persona.style, strengths: persona.strengths, weaknesses: persona.weaknesses, sideLabel, stance };
+  return { id, kind: 'ai', personaId: persona.id, displayName: persona.displayName, archetype: persona.archetype, tagline: persona.tagline, style: persona.style, strengths: persona.strengths, weaknesses: persona.weaknesses, sideLabel, stance };
+}
+
+function makeHumanDebater(id, player, sideLabel, stance) {
+  return {
+    id,
+    kind: 'human',
+    playerId: player.id,
+    personaId: '',
+    displayName: player.displayName,
+    archetype: 'Human Debater',
+    tagline: 'A live lobby player steps up to the mic.',
+    style: 'Natural, direct, lively, and responsive. Argues from the human speaker perspective with concise examples and practical callbacks.',
+    strengths: ['live improvisation', 'authenticity', 'audience connection'],
+    weaknesses: ['time pressure', 'rough edges'],
+    sideLabel,
+    stance,
+  };
+}
+
+function humanDebaterForPlayer(room, playerId) {
+  return room.debaters.find((d) => d.kind === 'human' && d.playerId === playerId) || null;
 }
 
 async function postOdds(room) {
@@ -576,6 +664,7 @@ function placeBet(room, playerId, marketId, amountRaw) {
   if (room.status !== 'BETTING_OPEN') throw apiError(400, 'Betting is not open.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
+  if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot place bets in their own round.');
   const market = room.markets.find((m) => m.id === marketId);
   if (!market) throw apiError(404, 'Market not found.');
   const amount = Math.floor(Number(amountRaw));
@@ -623,6 +712,7 @@ function startDebate(room) {
   if (room.running) return;
   room.running = true;
   room.error = null;
+  clearPendingHumanTurn(room);
   setPhase(room, 'BETTING_LOCKED', 'Bets locked');
   pushComment(room, 'Bets are locked. The bell rings.');
   runDebate(room.id).catch((error) => {
@@ -637,10 +727,89 @@ function startDebate(room) {
   });
 }
 
+async function collectDebateTurn(room, phase, debater, heckle) {
+  if (debater.kind !== 'human') {
+    return { text: await safeGenerateDebateTurn(room, phase, debater, heckle), source: 'ai', timeoutFilled: false };
+  }
+  return waitForHumanTurn(room, phase, debater, heckle);
+}
+
+function waitForHumanTurn(room, phase, debater, heckle) {
+  const startedAtMs = Date.now();
+  const expiresAtMs = startedAtMs + HUMAN_TURN_TIMEOUT_MS;
+  const pending = {
+    id: id('human_turn_'),
+    speakerDebaterId: debater.id,
+    playerId: debater.playerId,
+    speakerName: debater.displayName,
+    phase: phase.phase,
+    wordLimit: phase.wordLimit,
+    instruction: phase.instruction,
+    sideLabel: debater.sideLabel,
+    stance: debater.stance,
+    heckleId: heckle?.id || null,
+    heckleLabel: heckle?.label || '',
+    heckleInstruction: heckle?.instruction || '',
+    startedAt: new Date(startedAtMs).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString(),
+  };
+  room.pendingHumanTurn = pending;
+  touch(room);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(async () => {
+      const latest = rooms.get(room.id);
+      if (!latest?.pendingHumanTurn || latest.pendingHumanTurn.id !== pending.id) return;
+      humanTurnWaiters.delete(pending.id);
+      latest.pendingHumanTurn = null;
+      touch(latest);
+      const text = await safeGenerateDebateTurn(latest, phase, debater, heckle);
+      resolve({ text, source: 'ai_timeout', timeoutFilled: true });
+    }, HUMAN_TURN_TIMEOUT_MS);
+    humanTurnWaiters.set(pending.id, { resolve, timeout });
+  });
+}
+
+function submitHumanTurn(room, playerId, pendingTurnId, rawText) {
+  const pending = room.pendingHumanTurn;
+  if (!pending) throw apiError(409, 'No human turn is waiting for input.');
+  if (pending.id !== pendingTurnId) throw apiError(409, 'That human turn is no longer active.');
+  if (pending.playerId !== playerId) throw apiError(403, 'Only the active human debater can submit this turn.');
+  if (Date.now() > Date.parse(pending.expiresAt)) throw apiError(409, 'This human turn timed out.');
+  const text = validateHumanTurnText(rawText);
+  const waiter = humanTurnWaiters.get(pending.id);
+  if (!waiter) throw apiError(409, 'This human turn is not accepting submissions.');
+  clearTimeout(waiter.timeout);
+  humanTurnWaiters.delete(pending.id);
+  room.pendingHumanTurn = null;
+  touch(room);
+  waiter.resolve({ text, source: 'human', timeoutFilled: false });
+}
+
+function validateHumanTurnText(rawText) {
+  const text = cleanRichText(rawText, 1400);
+  if (text.length < 2) throw apiError(400, 'Human turn text is required.');
+  if (looksUnsafe(text)) throw apiError(400, 'Human turn text appears unsafe or not demo-friendly.');
+  return text;
+}
+
+function clearPendingHumanTurn(room, result = null) {
+  const pending = room.pendingHumanTurn;
+  if (!pending) return;
+  const waiter = humanTurnWaiters.get(pending.id);
+  if (waiter) {
+    clearTimeout(waiter.timeout);
+    humanTurnWaiters.delete(pending.id);
+    if (result) waiter.resolve(result);
+  }
+  room.pendingHumanTurn = null;
+}
+
 async function runDebate(roomId) {
   const phases = debatePhases();
   let room = requireRoom(roomId);
   room.turns = [];
+  room.pendingHumanTurn = null;
   room.verdict = null;
   room.settlements = null;
   touch(room);
@@ -648,14 +817,16 @@ async function runDebate(roomId) {
   for (const phase of phases) {
     room = requireRoom(roomId);
     const debater = room.debaters.find((d) => d.id === phase.speakerId);
+    if (!debater) throw apiError(500, `Missing debater for ${phase.speakerId}.`);
     const heckle = room.heckles.find((h) => h.status === 'pending');
     if (heckle) {
       heckle.status = 'queued';
       pushComment(room, `Heckle queued for ${debater.displayName}: ${heckle.label}.`);
     }
     setPhase(room, 'DEBATE', `${phase.phase}: ${debater.displayName}`);
-    const text = await safeGenerateDebateTurn(room, phase, debater, heckle || null);
-    const turn = { id: id('turn_'), phase: phase.phase, speakerDebaterId: debater.id, speakerName: debater.displayName, persona: debater.archetype, sideLabel: debater.sideLabel, heckleId: heckle?.id || null, heckleLabel: heckle?.label || null, text, createdAt: now() };
+    const result = await collectDebateTurn(room, phase, debater, heckle || null);
+    if (result.cancelled) return;
+    const turn = { id: id('turn_'), phase: phase.phase, speakerDebaterId: debater.id, speakerName: debater.displayName, persona: debater.archetype, sideLabel: debater.sideLabel, heckleId: heckle?.id || null, heckleLabel: heckle?.label || null, text: result.text, source: result.source, timeoutFilled: Boolean(result.timeoutFilled), createdAt: now() };
     room.turns.push(turn);
     if (heckle) {
       heckle.status = 'used';
@@ -714,6 +885,7 @@ function settleBets(room) {
 }
 
 function resetRoom(room, keepBankroll = true) {
+  clearPendingHumanTurn(room, { cancelled: true });
   room.status = 'LOBBY';
   room.currentPhase = 'Lobby';
   room.phaseStartedAt = now();
@@ -726,6 +898,7 @@ function resetRoom(room, keepBankroll = true) {
   room.bets = [];
   room.heckles = [];
   room.turns = [];
+  room.pendingHumanTurn = null;
   room.verdict = null;
   room.settlements = null;
   room.running = false;
@@ -793,32 +966,32 @@ function topicSchema() {
   return { type: 'object', additionalProperties: false, properties: { id: { type: 'string' }, resolution: { type: 'string' }, sideA: { type: 'string' }, sideB: { type: 'string' }, category: { type: 'string' }, comedyPotential: { type: 'integer' }, safetyRating: { type: 'string' }, suggestedPersonas: { type: 'array', items: { type: 'string' } } }, required: ['id', 'resolution', 'sideA', 'sideB', 'category', 'comedyPotential', 'safetyRating', 'suggestedPersonas'] };
 }
 
-async function safeGenerateCustomPersona(room, rawName, rawProfile) {
-  const { name, profile } = validateCustomPersonaInput(rawName, rawProfile);
-  if (looksUnsafe(name) || looksUnsafe(profile)) throw apiError(400, 'Custom debater appears unsafe or not demo-friendly.');
-  if (MOCK_AI) return fallbackCustomPersona(room, name, profile);
+async function safeGenerateCustomPersona(room, rawName, rawDescription) {
+  const { name, description } = validateCustomPersonaInput(rawName, rawDescription);
+  if (looksUnsafe(name) || looksUnsafe(description)) throw apiError(400, 'Custom debater appears unsafe or not demo-friendly.');
+  if (MOCK_AI) return fallbackCustomPersona(room, name, description);
   try {
     const parsed = await openAIStructured({
       task: 'setup',
       name: 'custom_debater_personality',
       schema: customPersonaSchema(),
-      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one safe, ridiculous, playable debate persona from the submitted debater name and profile. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, explicit sexual content, real private people, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
-      user: JSON.stringify({ name, profile, existingPersonas: allPersonas(room).map((p) => ({ displayName: p.displayName, archetype: p.archetype })) }, null, 2),
+      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one safe, ridiculous, playable debate persona from the submitted debater name and description. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, explicit sexual content, real private people, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
+      user: JSON.stringify({ name, description, existingPersonas: allPersonas(room).map((p) => ({ displayName: p.displayName, archetype: p.archetype })) }, null, 2),
       maxOutputTokens: 900,
     });
-    return sanitizeCustomPersona(room, name, profile, parsed);
+    return sanitizeCustomPersona(room, name, description, parsed);
   } catch (e) {
     console.error('Custom persona fallback:', e.message);
-    return fallbackCustomPersona(room, name, profile);
+    return fallbackCustomPersona(room, name, description);
   }
 }
 
-function validateCustomPersonaInput(rawName, rawProfile) {
+function validateCustomPersonaInput(rawName, rawDescription) {
   const name = cleanText(rawName, 200);
-  const profile = cleanText(rawProfile, 1200);
+  const description = cleanText(rawDescription, 1200);
   if (name.length < 2 || name.length > 48) throw apiError(400, 'Debater name must be 2-48 characters.');
-  if (profile.length < 10 || profile.length > 600) throw apiError(400, 'Debater profile must be 10-600 characters.');
-  return { name, profile };
+  if (description.length < 10 || description.length > 600) throw apiError(400, 'Debater description must be 10-600 characters.');
+  return { name, description };
 }
 
 function customPersonaSchema() {
@@ -836,13 +1009,13 @@ function customPersonaSchema() {
   };
 }
 
-function sanitizeCustomPersona(room, name, profile, raw) {
-  const fallback = fallbackCustomPersona(room, name, profile);
+function sanitizeCustomPersona(room, name, description, raw) {
+  const fallback = fallbackCustomPersona(room, name, description);
   let archetype = cleanText(raw?.archetype, 64) || fallback.archetype;
   if (normalizePersonaLabelPart(archetype) === normalizePersonaLabelPart(name)) archetype = fallback.archetype;
   if (normalizePersonaLabelPart(archetype) === normalizePersonaLabelPart(name)) archetype = 'Audience Wildcard';
   return {
-    id: uniquePersonaId(room, customPersonaIdBase(name, profile)),
+    id: uniquePersonaId(room, customPersonaIdBase(name, description)),
     displayName: name,
     archetype,
     tagline: cleanText(raw?.tagline, 120) || fallback.tagline,
@@ -852,8 +1025,8 @@ function sanitizeCustomPersona(room, name, profile, raw) {
   };
 }
 
-function fallbackCustomPersona(room, name, profile) {
-  const seed = hashNumber(`${name}|${profile}`);
+function fallbackCustomPersona(room, name, description) {
+  const seed = hashNumber(`${name}|${description}`);
   const archetypes = ['Parking Lot Prophet', 'Microwave Monarch', 'Budget Oracle', 'Snack Bar Absolutist', 'Calendar Warlord', 'Breakroom Theorist'];
   const strengthBank = [
     ['surprise framing', 'audience energy', 'memorable analogies'],
@@ -867,13 +1040,13 @@ function fallbackCustomPersona(room, name, profile) {
     ['confuses confidence for evidence', 'occasionally grandstands'],
     ['treats small details as destiny', 'under-explains obvious leaps'],
   ];
-  const hint = cleanText(profile.replace(/[.!?].*$/, ''), 90).toLowerCase();
+  const hint = cleanText(description.replace(/[.!?].*$/, ''), 90).toLowerCase();
   return {
-    id: uniquePersonaId(room, customPersonaIdBase(name, profile)),
+    id: uniquePersonaId(room, customPersonaIdBase(name, description)),
     displayName: name,
     archetype: archetypes[seed % archetypes.length],
     tagline: `${name} has entered with a theory nobody budgeted for.`,
-    style: `Ridiculous, committed, and debate-ready. Builds arguments from ${hint || 'the submitted profile'}, then escalates them into punchy claims, callbacks, and strangely usable logic.`,
+    style: `Ridiculous, committed, and debate-ready. Builds arguments from ${hint || 'the submitted premise'}, then escalates them into punchy claims, callbacks, and strangely usable logic.`,
     strengths: strengthBank[seed % strengthBank.length],
     weaknesses: weaknessBank[seed % weaknessBank.length],
   };
@@ -887,9 +1060,9 @@ function sanitizePersonaList(value, fallback, maxItems) {
   return items.length ? items : fallback.slice(0, maxItems);
 }
 
-function customPersonaIdBase(name, profile) {
+function customPersonaIdBase(name, description) {
   const slug = slugify(name, 30) || 'custom_debater';
-  return `custom_${slug}_${hashNumber(`${name}|${profile}`).toString(36)}`;
+  return `custom_${slug}_${hashNumber(`${name}|${description}`).toString(36)}`;
 }
 
 function slugify(value, max = 40) {
@@ -959,11 +1132,13 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle) {
   if (MOCK_AI) return mockDebateTurn(room, phase, debater, heckle);
   try {
     const opponent = room.debaters.find((d) => d.id !== debater.id);
-    const transcript = room.turns.map((t) => `${t.phase} — ${t.speakerName}: ${t.text}`).join('\n\n') || '(No prior turns.)';
+    const transcript = transcriptForPrompt(room);
+    const latestOpponent = latestTurnForDebater(room, opponent?.id);
+    const latestOpponentAnalysis = analyzeArgumentText(latestOpponent?.text || '');
     const text = await openAIText({
       task: 'debate',
-      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
-      user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Prior transcript:\n${transcript}`].join('\n\n'),
+      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
+      user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Opponent's latest turn:\n${latestOpponent ? `${latestOpponent.phase} — ${latestOpponent.speakerName}: ${latestOpponent.text}` : '(No opponent turn yet.)'}`, `Opponent latest-turn quality: ${latestOpponentAnalysis.label}. ${latestOpponentAnalysis.reason}`, `Required response behavior: directly answer the opponent's latest reasoning when it exists. If the latest turn is thin, call that out briefly and build a stronger positive case.`, `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
     });
     return cleanupTurn(text, debater);
@@ -989,23 +1164,80 @@ function judgeReadabilityGuidance(room) {
   return ' Kid-friendly readability mode is on. Explain the winner in plain grades 5-6 language. Keep the score labels unchanged, but make verdict, bestLine, and worstArgument.summary easy for a 10-12 year old to understand. Use short sentences and concrete reasons.';
 }
 
+function transcriptForPrompt(room) {
+  return room.turns.map((t) => {
+    const source = t.source === 'human' ? 'typed live by human' : t.timeoutFilled ? 'AI timeout fill-in' : 'AI generated';
+    return `${t.phase} — ${t.speakerName} (${t.persona}, ${t.sideLabel}, ${source}): ${t.text}`;
+  }).join('\n\n') || '(No prior turns.)';
+}
+
+function latestTurnForDebater(room, debaterId) {
+  return [...room.turns].reverse().find((t) => t.speakerDebaterId === debaterId) || null;
+}
+
+function analyzeArgumentText(text) {
+  const cleaned = cleanRichText(text, 1400);
+  const words = cleaned.match(/[A-Za-z0-9']+/g) || [];
+  const alpha = cleaned.replace(/[^A-Za-z0-9]/g, '');
+  const lower = cleaned.toLowerCase();
+  const isFiller = !alpha || /^(what|why|huh|ok|okay|yes|no|nah|idk|lol|lmao|sure|maybe|fine|\?+|!+|\.+)+$/i.test(cleaned.replace(/\s+/g, ''));
+  const reasonMarkers = (lower.match(/\b(because|therefore|so|if|then|should|would|means|causes|risk|benefit|incentive|consequence|evidence|example|claim|reason|logic|tradeoff|standard|impact)\b/g) || []).length;
+  const hasStance = /\b(should|would|could|must|better|worse|not|because|therefore|means)\b/i.test(cleaned);
+  let score = 0;
+  if (words.length >= 4 && !isFiller) score += 2;
+  if (words.length >= 15) score += 2;
+  if (words.length >= 40) score += 1;
+  if (reasonMarkers) score += Math.min(3, reasonMarkers);
+  if (hasStance) score += 1;
+  if (/[.!?]/.test(cleaned) && words.length >= 8) score += 1;
+  score = clamp(score, 0, 10);
+  const thin = score < 3;
+  const label = thin ? 'thin/no substantive argument' : score >= 7 ? 'substantive argument' : 'partial argument';
+  const reason = thin
+    ? 'It contains too little reasoning, evidence, or claim structure to treat as a serious argument.'
+    : `It contains ${words.length} words and ${reasonMarkers} explicit reasoning marker${reasonMarkers === 1 ? '' : 's'}.`;
+  return { text: cleaned, words, wordCount: words.length, score, thin, label, reason };
+}
+
+function opponentResponseLine(room, opponent, kids = false) {
+  const latest = latestTurnForDebater(room, opponent?.id);
+  if (!latest) return kids ? 'I will set up my own clear reason before my opponent has a turn to answer.' : 'I will set the frame before my opponent has a record to answer.';
+  const analysis = analyzeArgumentText(latest.text);
+  const quote = shortTurnQuote(latest.text);
+  if (analysis.thin) {
+    return kids
+      ? `${opponent.displayName}'s latest turn was "${quote}", which is not a real reason yet. I will answer by giving the judge a clearer reason.`
+      : `${opponent.displayName}'s latest turn was "${quote}", which gives the judge almost no reasoning to evaluate. I will not invent an argument for them; I will show why my side has the stronger frame.`;
+  }
+  return kids
+    ? `${opponent.displayName}'s main point was "${quote}". My answer is that this misses what would actually happen next.`
+    : `${opponent.displayName}'s strongest recent point was "${quote}". That point fails because it treats one surface detail as if it controls the whole resolution.`;
+}
+
+function shortTurnQuote(text, max = 130) {
+  const cleaned = cleanRichText(text, max);
+  if (cleaned.length <= max) return cleaned;
+  return `${cleaned.slice(0, max - 1).trim()}...`;
+}
+
 function mockDebateTurn(room, phase, debater, heckle) {
   if (readabilityMode(room) === 'kids') return mockKidsDebateTurn(room, phase, debater, heckle);
   const opponent = room.debaters.find((d) => d.id !== debater.id) || { displayName: 'my opponent' };
   const stance = String(debater.stance || '').replace(/[.!?]+$/, '');
   const heckleSentence = heckle ? ` Because the audience bought ${heckle.label}, let me comply: ${mockHeckleLine(heckle)} ` : ' ';
-  if (phase.phase.includes('question')) return `${opponent.displayName}, identify the single strongest assumption behind your case and explain why the judge should trust it instead of treating it as a decorative napkin under a collapsing argument.${heckleSentence}`;
-  if (phase.phase.includes('answer')) return `The assumption is not decorative; it is structural.${heckleSentence}My opponent wants one fragile objection to do the work of an entire case. It cannot. My side explains incentives, behavior, and consequences; theirs mostly points at the premise and asks the room to feel embarrassed.`;
-  if (phase.phase.includes('Closing')) return `The round is clear.${heckleSentence}My opponent had moments of theater, but theater is not the same as control. I gave the judge a usable frame: ${stance} because it better explains incentives, consequences, and the absurd machinery of human decision-making. Reward the side that made the strange premise intelligible. Vote ${debater.displayName}.`;
+  const responseLine = opponentResponseLine(room, opponent, false);
+  if (phase.phase.includes('question')) return `${opponent.displayName}, identify the single strongest assumption behind your case and explain why the judge should trust it instead of treating it as a decorative napkin under a collapsing argument. ${responseLine}${heckleSentence}`;
+  if (phase.phase.includes('answer')) return `The assumption is not decorative; it is structural. ${responseLine}${heckleSentence}My side explains incentives, behavior, and consequences; theirs has to survive direct contact with the transcript.`;
+  if (phase.phase.includes('Closing')) return `The round is clear. ${responseLine}${heckleSentence}I gave the judge a usable frame: ${stance} because it better explains incentives, consequences, and the absurd machinery of human decision-making. Reward the side that made the strange premise intelligible. Vote ${debater.displayName}.`;
   const byPersona = {
-    formal_logician: `I will make this simple. First, ${stance} is not a vibe; it is a claim about incentives and outcomes. Second, ${opponent.displayName} will likely confuse vividness with validity.${heckleSentence}Third, the judge should reward the side that explains cause and effect rather than merely juggling adjectives. Mine does. Theirs arrives wearing a novelty hat and asking to be taken seriously.`,
-    chaos_gremlin: `Let us stop pretending this is a normal debate. The resolution is a shopping cart with a law degree, and I am the only one willing to climb inside and steer.${heckleSentence}${stance} because reality already runs on stranger arrangements: meetings, password policies, and adults saying “circle back.” My opponent wants neat categories. I want results.`,
-    venture_capitalist: `I see a scalable thesis here.${heckleSentence}${stance} because the market rewards asymmetry, not dignity. My opponent will ask whether the premise is conventional. That is precisely the wrong question. The right question is whether it has distribution, defensibility, and a path to recurring revenue.`,
-    retired_admiral: `This is a question of command, logistics, and operational discipline.${heckleSentence}${stance} because institutions fail from weak supply lines and confused authority. I will identify the objective, secure the perimeter, and make the argument hold formation until the judge has no defensible avenue of retreat.`,
-    corporate_lawyer: `Subject to several qualifications, ${stance}.${heckleSentence}The opposing side will likely present confidence where the record supports only exposure. We must ask: who bears risk, who has authority, what standard applies, and whether the premise survives basic due diligence.`,
-    reddit_moderator: `I am already seeing problems with the opposing framing.${heckleSentence}${stance}, and before anyone accuses me of being pedantic, let me note that pedantry is just quality control wearing cargo shorts. My opponent needs evidence, definitions, and a non-hand-wavy theory of causation.`,
-    ancient_philosopher: `The question before us is not merely ${room.topic.resolution.replace(/^Resolved:\s*/i, '')}.${heckleSentence}It is whether our civilization still recognizes wisdom when it arrives wearing an absurd mask. My opponent mistakes dignity for seriousness. I submit that the comic often reveals the real.`,
-    product_manager: `From a user-outcome perspective, ${stance}.${heckleSentence}We need to define success metrics, validate the core workflow, and avoid letting legacy assumptions block an unexpectedly viable feature set. Also, yes, we should probably put this in the backlog.`,
+    formal_logician: `I will make this simple. First, ${stance} is not a vibe; it is a claim about incentives and outcomes. ${responseLine}${heckleSentence}The judge should reward the side that explains cause and effect rather than merely juggling adjectives.`,
+    chaos_gremlin: `Let us stop pretending this is a normal debate. The resolution is a shopping cart with a law degree, and I am willing to climb inside and steer. ${responseLine}${heckleSentence}${stance} because reality already runs on stranger arrangements: meetings, password policies, and adults saying “circle back.”`,
+    venture_capitalist: `I see a scalable thesis here. ${responseLine}${heckleSentence}${stance} because the market rewards asymmetry, not dignity. The right question is whether it has distribution, defensibility, and a path to recurring value.`,
+    retired_admiral: `This is a question of command, logistics, and operational discipline. ${responseLine}${heckleSentence}${stance} because institutions fail from weak supply lines and confused authority. I will identify the objective and secure the argument.`,
+    corporate_lawyer: `Subject to several qualifications, ${stance}. ${responseLine}${heckleSentence}We must ask who bears risk, who has authority, what standard applies, and whether the premise survives basic due diligence.`,
+    reddit_moderator: `I am already seeing problems with the opposing framing. ${responseLine}${heckleSentence}${stance}, and before anyone calls that pedantic, evidence and definitions are the table stakes of this round.`,
+    ancient_philosopher: `The question before us is not merely ${room.topic.resolution.replace(/^Resolved:\s*/i, '')}. ${responseLine}${heckleSentence}It is whether our civilization still recognizes wisdom when it arrives wearing an absurd mask.`,
+    product_manager: `From a user-outcome perspective, ${stance}. ${responseLine}${heckleSentence}We need to define success metrics, validate the core workflow, and avoid letting legacy assumptions block an unexpectedly viable feature set.`,
   };
   return byPersona[debater.personaId] || byPersona.formal_logician;
 }
@@ -1014,18 +1246,19 @@ function mockKidsDebateTurn(room, phase, debater, heckle) {
   const opponent = room.debaters.find((d) => d.id !== debater.id) || { displayName: 'my opponent' };
   const stance = String(debater.stance || '').replace(/[.!?]+$/, '');
   const heckleSentence = heckle ? ` The audience also gave me ${heckle.label}, so here is the simple version: ${mockKidsHeckleLine(heckle)} ` : ' ';
-  if (phase.phase.includes('question')) return `${opponent.displayName}, what is the biggest reason your side works? Please say it in one clear sentence so everyone at the table can follow it.${heckleSentence}`;
-  if (phase.phase.includes('answer')) return `Here is the simple answer.${heckleSentence}My side works because it explains what would happen next. My opponent is making the idea sound silly, but silly ideas can still have rules, choices, and consequences. That is why the judge should trust my side.`;
-  if (phase.phase.includes('Closing')) return `The round is simple.${heckleSentence}I showed why ${stance}. My opponent had funny lines, but my side gave a clearer reason. The judge should pick the side that explains the problem in a way people can use. Vote ${debater.displayName}.`;
+  const responseLine = opponentResponseLine(room, opponent, true);
+  if (phase.phase.includes('question')) return `${opponent.displayName}, what is the biggest reason your side works? Please say it in one clear sentence so everyone at the table can follow it. ${responseLine}${heckleSentence}`;
+  if (phase.phase.includes('answer')) return `Here is the simple answer. ${responseLine}${heckleSentence}My side works because it explains what would happen next. That is why the judge should trust my side.`;
+  if (phase.phase.includes('Closing')) return `The round is simple. ${responseLine}${heckleSentence}I showed why ${stance}. The judge should pick the side that explains the problem in a way people can use. Vote ${debater.displayName}.`;
   const byPersona = {
-    formal_logician: `I will keep this clear. ${stance} because the reasons fit together.${heckleSentence}First, my side explains what would happen. Second, it shows why that result makes sense. Third, my opponent is mostly pointing at the idea and saying it sounds strange. Strange is not the same as wrong.`,
-    chaos_gremlin: `This topic is weird, but we can still understand it.${heckleSentence}${stance} because the world already runs on weird rules. People follow calendars, passwords, and meetings. If those can work, this idea can work too.`,
-    venture_capitalist: `Here is the simple pitch.${heckleSentence}${stance} because good ideas solve a problem and keep people coming back. My opponent is asking if the idea sounds normal. That is the wrong test. The real test is whether it can work.`,
-    retired_admiral: `This is about planning and follow-through.${heckleSentence}${stance} because a good plan needs clear jobs, steady rules, and people who know what to do next. My opponent has doubts, but doubts are not a plan.`,
-    corporate_lawyer: `Let us check the simple facts. ${stance}.${heckleSentence}Who is in charge? What could go wrong? What rule decides the answer? My side answers those questions better than my opponent does.`,
-    reddit_moderator: `I see the problem with my opponent's argument.${heckleSentence}${stance} because they need more than a loud objection. They need proof. My side gives a clearer reason and does not skip the hard part.`,
-    ancient_philosopher: `This may sound like a joke, but jokes can teach us something.${heckleSentence}${stance} because the funny idea helps us see a real rule about people, choices, and fairness.`,
-    product_manager: `Think about the people using this idea. ${stance}.${heckleSentence}If it helps them, if they come back, and if the rules are clear, then the idea has a real chance. My opponent is missing that simple test.`,
+    formal_logician: `I will keep this clear. ${stance} because the reasons fit together. ${responseLine}${heckleSentence}My side explains what would happen and why that result makes sense.`,
+    chaos_gremlin: `This topic is weird, but we can still understand it. ${responseLine}${heckleSentence}${stance} because the world already runs on weird rules. People follow calendars, passwords, and meetings.`,
+    venture_capitalist: `Here is the simple pitch. ${responseLine}${heckleSentence}${stance} because good ideas solve a problem and keep people coming back. The real test is whether it can work.`,
+    retired_admiral: `This is about planning and follow-through. ${responseLine}${heckleSentence}${stance} because a good plan needs clear jobs, steady rules, and people who know what to do next.`,
+    corporate_lawyer: `Let us check the simple facts. ${stance}. ${responseLine}${heckleSentence}Who is in charge? What could go wrong? What rule decides the answer? My side answers those questions better.`,
+    reddit_moderator: `I see the problem with my opponent's argument. ${responseLine}${heckleSentence}${stance} because they need more than a loud objection. They need proof.`,
+    ancient_philosopher: `This may sound like a joke, but jokes can teach us something. ${responseLine}${heckleSentence}${stance} because the funny idea helps us see a real rule about people, choices, and fairness.`,
+    product_manager: `Think about the people using this idea. ${stance}. ${responseLine}${heckleSentence}If it helps them, if they come back, and if the rules are clear, then the idea has a real chance.`,
   };
   return byPersona[debater.personaId] || byPersona.formal_logician;
 }
@@ -1049,12 +1282,13 @@ function mockKidsHeckleLine(heckle) {
 async function safeJudgeDebate(room) {
   if (MOCK_AI) return mockJudge(room);
   try {
+    const qualityReport = debateQualityReport(room);
     const parsed = await openAIStructured({
       task: 'judge',
       name: 'judge_verdict',
       schema: judgeSchema(),
-      system: `You are The Honorable Judge Bottington III for AI Debate Casino. Score a comedic debate. You must choose exactly one winner; no ties. Use the rubric: logical coherence, responsiveness, rhetorical force, humor, originality, topic control. Reward both logic and entertainment. Do not consider betting distribution. Also settle prop markets from the transcript using clear evidence.${judgeReadabilityGuidance(room)}`,
-      user: JSON.stringify({ topic: room.topic, debaters: room.debaters, markets: room.markets.filter((m) => m.type === 'prop'), heckles: room.heckles, transcript: room.turns }, null, 2),
+      system: `You are The Honorable Judge Bottington III for AI Debate Casino. Score a comedic debate from the actual transcript only. You must choose exactly one winner; no ties. Use the rubric: logical coherence, responsiveness, rhetorical force, humor, originality, topic control. Reward both logic and entertainment, but do not reward a debater for merely having a funny persona if their transcript turns are empty, evasive, generic, or disconnected from the opponent. Penalize "what", punctuation-only, filler, and other non-arguments heavily: they should receive very low logic, responsiveness, rhetorical force, originality, and topic control. Reward direct engagement with the opponent's real claims. Do not invent arguments that are not in the transcript. Do not consider betting distribution. Also settle prop markets from the transcript using clear evidence.${judgeReadabilityGuidance(room)}`,
+      user: JSON.stringify({ topic: room.topic, debaters: room.debaters, markets: room.markets.filter((m) => m.type === 'prop'), heckles: room.heckles, transcript: room.turns, qualityReport }, null, 2),
       maxOutputTokens: 2400,
     });
     return sanitizeVerdict(room, parsed);
@@ -1073,15 +1307,18 @@ function judgeSchema() {
 }
 
 function sanitizeVerdict(room, v) {
-  const winnerDebaterId = v.winnerDebaterId === 'debater_b' ? 'debater_b' : 'debater_a';
-  const winner = room.debaters.find((d) => d.id === winnerDebaterId) || room.debaters[0];
+  let winnerDebaterId = v.winnerDebaterId === 'debater_b' ? 'debater_b' : 'debater_a';
   const props = room.markets.filter((m) => m.type === 'prop');
+  const scores = applyTranscriptQualityCaps(room, { debater_a: sanitizeScore(v.scores?.debater_a), debater_b: sanitizeScore(v.scores?.debater_b) });
+  const otherDebaterId = winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a';
+  if (scores[otherDebaterId].total > scores[winnerDebaterId].total) winnerDebaterId = otherDebaterId;
+  const winner = room.debaters.find((d) => d.id === winnerDebaterId) || room.debaters[0];
   return {
     winnerDebaterId,
     winnerName: winner.displayName,
     margin: ['razor-thin', 'narrow', 'clear', 'landslide'].includes(v.margin) ? v.margin : 'narrow',
     confidence: clamp(Number(v.confidence || 0.72), 0, 1),
-    scores: { debater_a: sanitizeScore(v.scores?.debater_a), debater_b: sanitizeScore(v.scores?.debater_b) },
+    scores,
     bestLine: { debaterId: ['debater_a', 'debater_b'].includes(v.bestLine?.debaterId) ? v.bestLine.debaterId : winnerDebaterId, quote: cleanRichText(v.bestLine?.quote || findBestLine(room, winnerDebaterId), 280) },
     worstArgument: { debaterId: ['debater_a', 'debater_b'].includes(v.worstArgument?.debaterId) ? v.worstArgument.debaterId : (winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a'), summary: cleanRichText(v.worstArgument?.summary || 'Overextended a premise without enough support.', 240) },
     verdict: cleanRichText(v.verdict || `${winner.displayName} wins by narrow margin.`, 1400),
@@ -1095,23 +1332,130 @@ function sanitizeVerdict(room, v) {
 function sanitizeScore(s) {
   const keys = ['logicalCoherence', 'responsiveness', 'rhetoricalForce', 'humor', 'originality', 'topicControl'];
   const out = {};
-  for (const key of keys) out[key] = clamp(Math.round(Number(s?.[key] || 6)), 0, 10);
+  for (const key of keys) out[key] = normalizeScoreValue(s?.[key], 6);
   out.total = keys.reduce((sum, key) => sum + out[key], 0);
   return out;
 }
 
+function normalizeScoreValue(value, fallback = 6) {
+  const n = Number(value);
+  return Number.isFinite(n) ? clamp(Math.round(n), 0, 10) : fallback;
+}
+
+function debateQualityReport(room) {
+  return Object.fromEntries((room.debaters || []).map((debater) => {
+    const performance = analyzeDebaterPerformance(room, debater.id);
+    return [debater.id, {
+      displayName: debater.displayName,
+      kind: debater.kind || 'ai',
+      turnCount: performance.turns.length,
+      substantiveTurnCount: performance.substantiveTurnCount,
+      totalWords: performance.totalWords,
+      averageArgumentScore: performance.averageArgumentScore,
+      note: performance.note,
+      turns: performance.turns.map((t) => ({ phase: t.phase, wordCount: t.analysis.wordCount, quality: t.analysis.label, reason: t.analysis.reason, text: t.text })),
+    }];
+  }));
+}
+
+function analyzeDebaterPerformance(room, debaterId) {
+  const turns = room.turns.filter((t) => t.speakerDebaterId === debaterId).map((turn) => ({ ...turn, analysis: analyzeArgumentText(turn.text) }));
+  const totalWords = turns.reduce((sum, turn) => sum + turn.analysis.wordCount, 0);
+  const substantiveTurnCount = turns.filter((turn) => !turn.analysis.thin).length;
+  const averageArgumentScore = turns.length ? turns.reduce((sum, turn) => sum + turn.analysis.score, 0) / turns.length : 0;
+  const note = !turns.length
+    ? 'No transcript turns.'
+    : substantiveTurnCount === 0
+      ? 'No substantive turns; heavily penalize this debater.'
+      : `${substantiveTurnCount}/${turns.length} turns were substantive.`;
+  return { turns, totalWords, substantiveTurnCount, averageArgumentScore, note };
+}
+
+function scoreFromPerformance(room, debaterId) {
+  const performance = analyzeDebaterPerformance(room, debaterId);
+  const avg = performance.averageArgumentScore;
+  const hasSubstance = performance.substantiveTurnCount > 0;
+  const responsiveness = estimateResponsiveness(room, debaterId);
+  const base = hasSubstance ? clamp(Math.round(avg), 2, 9) : 1;
+  const score = {
+    logicalCoherence: hasSubstance ? base : 1,
+    responsiveness: hasSubstance ? clamp(Math.round((base + responsiveness) / 2), 1, 9) : 1,
+    rhetoricalForce: hasSubstance ? clamp(base + (performance.totalWords > 120 ? 1 : 0), 1, 9) : 1,
+    humor: hasSubstance ? clamp(Math.round(base * 0.8 + 2), 1, 9) : 1,
+    originality: hasSubstance ? clamp(Math.round(base * 0.85 + 1), 1, 9) : 1,
+    topicControl: hasSubstance ? clamp(Math.round((base + (performance.substantiveTurnCount >= 2 ? 7 : 5)) / 2), 1, 9) : 1,
+  };
+  score.total = Object.values(score).reduce((sum, value) => sum + value, 0);
+  return score;
+}
+
+function estimateResponsiveness(room, debaterId) {
+  const debater = room.debaters.find((d) => d.id === debaterId);
+  const opponent = room.debaters.find((d) => d.id !== debaterId);
+  if (!debater || !opponent) return 5;
+  const turns = room.turns.filter((t) => t.speakerDebaterId === debaterId);
+  if (!turns.length) return 0;
+  let total = 0;
+  for (const turn of turns) {
+    const earlierOpponent = room.turns.filter((t) => t.speakerDebaterId === opponent.id && new Date(t.createdAt) <= new Date(turn.createdAt)).at(-1);
+    if (!earlierOpponent) {
+      total += 5;
+      continue;
+    }
+    const opponentTerms = importantTerms(earlierOpponent.text);
+    const lower = turn.text.toLowerCase();
+    const overlap = opponentTerms.filter((term) => lower.includes(term)).length;
+    total += clamp(2 + overlap * 2, 1, 9);
+  }
+  return total / turns.length;
+}
+
+function importantTerms(text) {
+  const stop = new Set(['the', 'and', 'that', 'this', 'with', 'from', 'they', 'their', 'because', 'should', 'would', 'could', 'have', 'will', 'your', 'about', 'what', 'there', 'here']);
+  return [...new Set((text.match(/[A-Za-z]{5,}/g) || []).map((word) => word.toLowerCase()).filter((word) => !stop.has(word)))].slice(0, 8);
+}
+
+function applyTranscriptQualityCaps(room, scores) {
+  const capped = { debater_a: { ...scores.debater_a }, debater_b: { ...scores.debater_b } };
+  for (const debaterId of ['debater_a', 'debater_b']) {
+    const performance = analyzeDebaterPerformance(room, debaterId);
+    if (!performance.turns.length || performance.substantiveTurnCount > 0) continue;
+    capScore(capped[debaterId], 2);
+  }
+  return capped;
+}
+
+function capScore(score, maxCategory) {
+  const keys = ['logicalCoherence', 'responsiveness', 'rhetoricalForce', 'humor', 'originality', 'topicControl'];
+  for (const key of keys) score[key] = Math.min(score[key], maxCategory);
+  score.total = keys.reduce((sum, key) => sum + score[key], 0);
+}
+
 function mockJudge(room) {
   const h = hashNumber(room.id + room.topic.resolution + room.turns.map((t) => t.text).join('|'));
-  const winnerDebaterId = h % 2 === 0 ? 'debater_a' : 'debater_b';
+  const scores = { debater_a: scoreFromPerformance(room, 'debater_a'), debater_b: scoreFromPerformance(room, 'debater_b') };
+  const winnerDebaterId = scores.debater_a.total === scores.debater_b.total ? (h % 2 === 0 ? 'debater_a' : 'debater_b') : (scores.debater_a.total > scores.debater_b.total ? 'debater_a' : 'debater_b');
   const winner = room.debaters.find((d) => d.id === winnerDebaterId);
   const loserId = winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a';
-  const win = { logicalCoherence: 8, responsiveness: 8, rhetoricalForce: 9, humor: 8, originality: 8, topicControl: 8, total: 49 };
-  const lose = { logicalCoherence: 7, responsiveness: 7, rhetoricalForce: 7, humor: 7, originality: 7, topicControl: 7, total: 42 };
   const transcript = room.turns.map((t) => t.text).join(' ');
+  const loserPerformance = analyzeDebaterPerformance(room, loserId);
+  const weakest = loserPerformance.turns.sort((a, b) => a.analysis.score - b.analysis.score)[0];
+  const worstSummary = weakest?.analysis.thin
+    ? `${weakest.speakerName} submitted "${shortTurnQuote(weakest.text, 80)}", which gave the judge almost no argument to evaluate.`
+    : `${weakest?.speakerName || 'The losing side'} did not answer the stronger opposing frame directly enough.`;
   if (readabilityMode(room) === 'kids') {
-    return { winnerDebaterId, winnerName: winner.displayName, margin: h % 3 === 0 ? 'clear' : 'narrow', confidence: 0.72, scores: { debater_a: winnerDebaterId === 'debater_a' ? win : lose, debater_b: winnerDebaterId === 'debater_b' ? win : lose }, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: 'The losing side had some funny ideas, but it did not explain the main point clearly enough.' }, verdict: `${winner.displayName} wins. Their side was easier to follow. They gave clear reasons, answered the other side, and showed what would happen next. The other side had good moments, but it left too many questions unanswered.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|pirate|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found a matching line in the debate.', confidence: 0.78 })) };
+    return { winnerDebaterId, winnerName: winner.displayName, margin: marginFromScores(scores, winnerDebaterId), confidence: 0.76, scores, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: worstSummary }, verdict: `${winner.displayName} wins. Their side was easier to follow because it gave clearer reasons and answered what was actually said. The other side had weaker or thinner turns, so it left too many questions unanswered.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|pirate|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found a matching line in the debate.', confidence: 0.78 })) };
   }
-  return { winnerDebaterId, winnerName: winner.displayName, margin: h % 3 === 0 ? 'clear' : 'narrow', confidence: 0.72, scores: { debater_a: winnerDebaterId === 'debater_a' ? win : lose, debater_b: winnerDebaterId === 'debater_b' ? win : lose }, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: 'The losing side occasionally mistook atmosphere, volume, or procedural suspicion for proof.' }, verdict: `${winner.displayName} wins. The winning side gave the judge a more usable frame, made better callbacks, and treated the absurd premise as a system of incentives rather than a one-note joke. The losing side had moments, but too often reached for atmosphere when it needed architecture.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|petting zoo|pirate|clipboard|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found matching transcript language.', confidence: 0.78 })) };
+  return { winnerDebaterId, winnerName: winner.displayName, margin: marginFromScores(scores, winnerDebaterId), confidence: 0.76, scores, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: worstSummary }, verdict: `${winner.displayName} wins. The winning side gave the judge a more usable frame, made better callbacks to the actual transcript, and supplied more concrete reasoning. The losing side was penalized where its turns were thin, evasive, or disconnected from the opponent's claims.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|petting zoo|pirate|clipboard|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found matching transcript language.', confidence: 0.78 })) };
+}
+
+function marginFromScores(scores, winnerDebaterId) {
+  const loserId = winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a';
+  const gap = scores[winnerDebaterId].total - scores[loserId].total;
+  if (gap >= 18) return 'landslide';
+  if (gap >= 10) return 'clear';
+  if (gap >= 4) return 'narrow';
+  return 'razor-thin';
 }
 
 function findBestLine(room, debaterId) {
