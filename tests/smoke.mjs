@@ -1,12 +1,21 @@
+import { createClient } from 'redis';
+
 const base = process.env.BASE_URL || 'http://localhost:8787';
+let cookieHeader = '';
 
 async function apiRaw(path, options = {}) {
-  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(!options.noCookie && cookieHeader ? { Cookie: cookieHeader } : {}),
+    ...(options.headers || {}),
+  };
   const response = await fetch(`${base}${path}`, {
     method: options.method || 'GET',
     headers,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
+  const setCookie = response.headers.get('set-cookie');
+  if (setCookie && !options.noCookie) cookieHeader = setCookie.split(';')[0];
   const data = await response.json();
   return { response, data };
 }
@@ -21,6 +30,29 @@ async function expectApiError(path, options, status) {
   const { response, data } = await apiRaw(path, options);
   if (response.status !== status) throw new Error(`Expected ${status} from ${path}, got ${response.status}: ${data.error || 'no error'}`);
   return data;
+}
+
+async function assertRedisRoomSnapshot(roomId, namespace) {
+  if (!process.env.REDIS_URL) throw new Error('Health reported Redis persistence but REDIS_URL is not available to the smoke test.');
+  const client = createClient({ url: process.env.REDIS_URL });
+  await client.connect();
+  try {
+    const key = `${namespace}:room:${roomId}`;
+    for (let i = 0; i < 30; i++) {
+      const raw = await client.get(key);
+      if (raw) {
+        const room = JSON.parse(raw);
+        if (room.id !== roomId) throw new Error(`Persisted room id mismatch: ${room.id} !== ${roomId}`);
+        if (!Array.isArray(room.players) || !room.players.length) throw new Error('Persisted room snapshot did not include players.');
+        if (room.streamingTurn) throw new Error('Persisted room snapshot included transient streamingTurn state.');
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Redis room snapshot ${key} was not written.`);
+  } finally {
+    await client.quit();
+  }
 }
 
 function normalizePersonaLabelPart(value) {
@@ -125,9 +157,19 @@ async function createHumanDebateRoom(label = 'Human Smoke Host') {
 }
 
 const health = await api('/api/health');
-const personas = await api('/api/personas');
 if (typeof health.transcriptStreamCps !== 'number') throw new Error('Health payload did not expose transcript streaming speed.');
 if (typeof health.debateBotPauseMs !== 'number') throw new Error('Health payload did not expose debate bot pause.');
+if (!health.persistence || typeof health.persistence.redisConfigured !== 'boolean') throw new Error('Health payload did not expose persistence state.');
+if (!health.access || typeof health.access.required !== 'boolean') throw new Error('Health payload did not expose access state.');
+if (health.access.required) {
+  if (!process.env.SMOKE_ACCESS_CODE) throw new Error('Access gate is enabled; set SMOKE_ACCESS_CODE for smoke tests.');
+  await expectApiError('/api/personas', { noCookie: true }, 401);
+  await expectApiError('/api/access', { method: 'POST', body: { code: 'wrong-code' }, noCookie: true }, 403);
+  const access = await api('/api/access', { method: 'POST', body: { code: process.env.SMOKE_ACCESS_CODE } });
+  if (!access.authenticated) throw new Error('Access code did not authenticate the smoke client.');
+  if (!cookieHeader.startsWith(`${health.access.cookieName || 'adc_access'}=`)) throw new Error('Access response did not set the expected cookie.');
+}
+const personas = await api('/api/personas');
 const expectedNewPersonas = ['spreadsheet_oracle', 'sentient_vending_machine', 'cursed_intern', 'suburban_warlord', 'crypto_court_jester', 'museum_docent_doom', 'weather_app_shaman', 'powerpoint_necromancer', 'elevator_philosopher', 'mall_santa_auditor'];
 for (const personaId of expectedNewPersonas) {
   if (!personas.personas.some((p) => p.id === personaId)) throw new Error(`Missing new built-in persona ${personaId}.`);
@@ -156,6 +198,7 @@ const created = await api('/api/rooms', { method: 'POST', body: { displayName: '
 const roomId = created.room.id;
 const hostToken = created.hostToken;
 if (created.room.readabilityMode !== 'classic') throw new Error('New room did not default to classic readability.');
+if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino');
 console.log(`Created room ${roomId}`);
 
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', body: { name: 'Madame Tax Volcano', description: 'A furious accountant who treats every claim like an audit with fireworks.' } }, 403);

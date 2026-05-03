@@ -321,6 +321,13 @@ meter {
   max-width: 880px;
 }
 
+.access-card {
+  position: relative;
+  z-index: 1;
+  width: min(420px, 100%);
+  margin-top: 1.7rem;
+}
+
 .form-card {
   padding: 1.1rem;
   background:
