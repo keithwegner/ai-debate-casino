@@ -1085,6 +1085,49 @@ meter {
   margin-top: 0.65rem;
 }
 
+.custom-debater-box {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(73, 48, 20, 0.14);
+}
+
+.custom-debater-box h4 {
+  margin-bottom: 0.2rem;
+}
+
+.custom-debater-draft {
+  margin-top: 0.9rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(73, 48, 20, 0.16);
+  border-radius: var(--radius);
+  background: rgba(255, 250, 240, 0.72);
+}
+
+.custom-debater-draft p {
+  margin-bottom: 0.65rem;
+}
+
+.draft-field {
+  display: grid;
+  gap: 0.12rem;
+  margin-top: 0.55rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.draft-field strong {
+  color: var(--ink);
+}
+
+.draft-actions {
+  justify-content: flex-start;
+  margin-top: 0.7rem;
+}
+
+.draft-actions button {
+  margin-top: 0;
+}
+
 .audience-control { margin-bottom: 1rem; }
 
 .segmented-control {
