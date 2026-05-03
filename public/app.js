@@ -11,6 +11,7 @@ let state = {
   pendingAction: '',
   pollTimer: null,
   eventSource: null,
+  countdownTimer: null,
 };
 
 initAmbientMotion();
@@ -145,20 +146,25 @@ function stopLiveUpdates() {
   state.eventSource = null;
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = null;
+  if (state.countdownTimer) clearInterval(state.countdownTimer);
+  state.countdownTimer = null;
 }
 
 function render() {
   if (!state.session) {
     root.innerHTML = landingHtml();
     bindLanding();
+    syncCountdownTimer();
     return;
   }
   if (!state.room) {
     root.innerHTML = `<main class="shell loading-shell"><section class="panel loading-card"><div class="kicker">Table status</div><h1>Loading room ${h(state.session.roomId)}…</h1>${flashHtml()}${processingHtml(null)}</section></main>`;
+    syncCountdownTimer();
     return;
   }
   root.innerHTML = roomHtml(state.room);
   bindRoom();
+  syncCountdownTimer();
 }
 
 function landingHtml() {
@@ -211,6 +217,7 @@ function roomHtml(room) {
         <section class="stage panel" aria-label="Debate table">
           <div class="table-marker" aria-hidden="true"></div>
           ${topicHtml(room)}
+          ${humanTurnHtml(room, me)}
           ${transcriptHtml(room)}
           ${verdictHtml(room)}
         </section>
@@ -241,14 +248,8 @@ function setupProgressHtml(room) {
   const steps = setupProgressSteps(room);
   const activeIndex = Math.max(0, ...steps.map((step, index) => step.state === 'upcoming' ? -1 : index));
   const progress = Math.round((activeIndex / Math.max(steps.length - 1, 1)) * 100);
-  const current = steps.find((step) => step.state === 'current');
-  const summary = current ? `Current: ${current.label}` : 'Round setup complete';
   return `
     <section class="setup-progress panel" aria-label="Round setup progress" style="--setup-progress:${progress}%">
-      <div class="setup-progress-head">
-        <div><div class="kicker">Run sheet</div><h2>Round progress</h2></div>
-        <div class="setup-progress-summary">${h(summary)}</div>
-      </div>
       <ol class="setup-steps">
         ${steps.map((step, index) => `<li class="setup-step ${step.state}" ${step.state === 'current' ? 'aria-current="step"' : ''}><span class="setup-chip">${index + 1}</span><span class="setup-label">${h(step.label)}</span><span class="setup-status">${h(step.status)}</span></li>`).join('')}
       </ol>
@@ -286,14 +287,73 @@ function topicHtml(room) {
   return `<div class="topic-card"><div class="kicker">Resolution</div><h2>${h(room.topic.resolution)}</h2><div class="topic-meta"><span>${h(room.topic.category)}</span><span>Comedy ${h(room.topic.comedyPotential)}/10</span><span>${h(room.topic.safetyRating)}</span></div></div>`;
 }
 
+function humanTurnHtml(room, me) {
+  const pending = room.pendingHumanTurn;
+  if (!pending) return '';
+  const remaining = formatCountdown(remainingMs(pending));
+  const pct = countdownPercent(pending);
+  const isSpeaker = me?.id === pending.playerId;
+  const heckle = pending.heckleLabel ? `<div class="human-turn-heckle"><strong>${h(pending.heckleLabel)}</strong><span>${h(pending.heckleInstruction)}</span></div>` : '';
+  if (!isSpeaker) {
+    return `
+      <section class="human-turn panel inset waiting" aria-live="polite">
+        <div class="human-turn-head"><div><div class="kicker">Human turn</div><h3>${h(pending.speakerName)} is on the clock</h3></div><div class="countdown" data-countdown>${h(remaining)}</div></div>
+        <p class="muted">${h(pending.phase)} · ${h(pending.wordLimit)}</p>
+        ${heckle}
+        <div class="countdown-meter"><span data-countdown-meter style="width:${pct}%"></span></div>
+      </section>`;
+  }
+  return `
+    <section class="human-turn panel inset active" aria-live="polite">
+      <div class="human-turn-head"><div><div class="kicker">Your turn</div><h3>${h(pending.phase)}</h3></div><div class="countdown" data-countdown>${h(remaining)}</div></div>
+      <p class="muted">${h(pending.instruction)} Length: ${h(pending.wordLimit)}.</p>
+      ${heckle}
+      <label for="humanTurnText">Type your argument. <span data-countdown>${h(remaining)}</span> left.</label>
+      <textarea id="humanTurnText" rows="6" maxlength="1400" placeholder="Type your turn here. ${h(remaining)} left before AI fill-in."></textarea>
+      <div class="countdown-meter"><span data-countdown-meter style="width:${pct}%"></span></div>
+      <button class="primary" data-action="submitHumanTurn" data-pending-turn-id="${h(pending.id)}">${buttonContent('submitHumanTurn', 'Submit turn')}</button>
+    </section>`;
+}
+
 function debatersHtml(room) {
-  if (!room.debaters?.length) return `<section class="panel compact player-seats"><div class="kicker">Table seats</div><h3>Debaters</h3><p class="muted">Personas appear after topic selection.</p></section>`;
-  return `<section class="panel compact player-seats"><div class="kicker">Table seats</div><h3>Debaters</h3>${room.debaters.map((d) => `<article class="debater ${d.id}"><div class="side-label">${h(d.sideLabel)}</div><h4>${h(d.displayName)}</h4><div class="muted">${h(d.archetype)}</div><p>${h(d.tagline)}</p><div class="stance">${h(d.stance)}</div></article>`).join('')}</section>`;
+  const seats = room.debaters?.length
+    ? room.debaters.map((d) => `<article class="debater ${d.id} ${d.kind === 'human' ? 'human-debater' : ''}"><div class="side-label">${h(d.sideLabel)}</div><h4>${h(d.displayName)}</h4><div class="muted">${h(d.archetype)}${d.kind === 'human' ? ' · Lobby player' : ''}</div><p>${h(d.tagline)}</p><div class="stance">${h(d.stance)}</div></article>`).join('')
+    : '<p class="muted">Personas appear after topic selection.</p>';
+  return `<section class="panel compact player-seats"><div class="kicker">Table seats</div><h3>Debaters</h3>${seats}${lobbyHtml(room)}</section>`;
+}
+
+function lobbyHtml(room) {
+  const players = lobbyPlayers(room);
+  const rows = players.map((player) => {
+    const assigned = assignedDebaterSlotForPlayer(room, player.id);
+    const badges = [
+      player.isHost ? '<span class="seat-badge">Host</span>' : '',
+      player.id === state.session?.playerId ? '<span class="seat-badge">You</span>' : '',
+      assigned ? `<span class="seat-badge active">${h(assigned)}</span>` : '',
+    ].filter(Boolean).join('');
+    return `<li><span class="lobby-name">${h(player.displayName)}</span><span class="lobby-badges">${badges}</span></li>`;
+  }).join('');
+  return `<div class="lobby-subsection"><div class="kicker">Lobby</div>${rows ? `<ul>${rows}</ul>` : '<p class="muted small">No lobby players yet.</p>'}</div>`;
+}
+
+function lobbyPlayers(room) {
+  return (room.players || []).filter((p) => !p.isBot);
+}
+
+function assignedDebaterSlotForPlayer(room, playerId) {
+  const debater = (room.debaters || []).find((d) => d.kind === 'human' && d.playerId === playerId);
+  return debater ? debater.sideLabel : '';
 }
 
 function transcriptHtml(room) {
   if (!room.turns?.length) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
-  return `<section class="transcript"><h3>Live transcript</h3>${room.turns.map((t) => `<article class="turn ${t.speakerDebaterId}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div>${formattedTextHtml(t.text)}</article>`).join('')}</section>`;
+  return `<section class="transcript"><h3>Live transcript</h3>${room.turns.map((t) => `<article class="turn ${t.speakerDebaterId}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div>${formattedTextHtml(t.text)}</article>`).join('')}</section>`;
+}
+
+function turnSourceHtml(turn) {
+  if (turn.timeoutFilled) return '<span class="source-chip timeout">AI fill-in</span>';
+  if (turn.source === 'human') return '<span class="source-chip human">Typed live</span>';
+  return '';
 }
 
 function verdictHtml(room) {
@@ -373,15 +433,22 @@ function scoreCardHtml(debater, score = {}) {
 
 function sportsbookHtml(room, me) {
   const myBets = room.bets.filter((b) => b.userId === me?.id);
+  const humanDebater = humanDebaterForCurrentPlayer(room, me);
+  const canBet = room.status === 'BETTING_OPEN' && !humanDebater;
   if (!room.markets?.length) return `<div class="kicker">Sportsbook</div><h3>Betting window</h3><p class="muted">The Oddsmaker has not posted lines yet.</p><p class="fineprint">Fake chips only. No cash value.</p>`;
   return `
     <div class="kicker">Sportsbook</div>
     <h3>Betting window</h3>
     <div class="bet-status ${room.status === 'BETTING_OPEN' ? 'open' : 'closed'}">${room.status === 'BETTING_OPEN' ? 'Betting open' : 'Betting locked / closed'}</div>
-    <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'} />
-    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small>${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Bet</button></article>`).join('')}</div>
+    ${humanDebater ? `<p class="bet-blocked">You are debating as ${h(humanDebater.sideLabel)}. Human debaters cannot bet in their own round.</p>` : ''}
+    <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />
+    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small>${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Bet</button></article>`).join('')}</div>
     <section class="my-bets"><h4>My bets</h4>${myBets.length ? `<table><tbody>${myBets.map((b) => `<tr><td>${h(b.marketLabel)}</td><td>${chips(b.amount)}</td><td>${h(b.status)}</td><td>${b.net === null ? '' : signedChips(b.net)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No active bets.</p>'}</section>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
+}
+
+function humanDebaterForCurrentPlayer(room, me) {
+  return (room.debaters || []).find((d) => d.kind === 'human' && d.playerId === me?.id) || null;
 }
 
 function hecklesHtml(room, me) {
@@ -409,7 +476,7 @@ function hostControlsHtml(room) {
       <div class="section-head"><div><div class="kicker">Host controls</div><h2>Pit boss console</h2></div><div class="button-row"><button data-action="quickDemo" class="primary" ${room.running ? 'disabled' : ''}>One-click demo round</button><button data-action="startDebate" ${room.status === 'BETTING_OPEN' && !room.running ? '' : 'disabled'}>Start debate</button><button data-action="resetRoom" ${room.running ? 'disabled' : ''}>Reset</button><button data-action="resetBankrolls" ${room.running ? 'disabled' : ''}>Reset bankrolls</button></div></div>
       <div class="host-grid">
         <div class="control-card"><h3>1. Topic</h3><textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canEdit ? '' : 'disabled'}></textarea><button data-action="generateTopics" ${canEdit ? '' : 'disabled'}>Generate topic candidates</button><label>Custom resolution</label><input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canEdit ? '' : 'disabled'} /><button data-action="setCustomTopic" ${canEdit ? '' : 'disabled'}>Use custom topic</button><div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · Comedy ${h(t.comedyPotential)}/10</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canEdit ? '' : 'disabled'}>Select</button></article>`).join('')}</div></div>
-        <div class="control-card"><h3>2. Personas + odds</h3>${personaSelectHtml('personaA', room.debaters?.[0]?.personaId, room)}${personaSelectHtml('personaB', room.debaters?.[1]?.personaId, room)}<button data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
+        <div class="control-card"><h3>2. Debaters + odds</h3>${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}<button id="assignDebatersButton" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
         <div class="control-card"><h3>3. Run sheet</h3>${readabilityControlHtml(room, canEdit)}<ol><li>Generate/select a topic.</li><li>Assign personas.</li><li>Post fake-chip odds.</li><li>Let humans or demo bots bet.</li><li>Start debate.</li></ol><p class="fineprint">The one-click button handles all setup and starts the round.</p></div>
       </div>
     </section>`;
@@ -427,12 +494,50 @@ function readabilityControlHtml(room, canEdit) {
     </div>`;
 }
 
-function personaSelectHtml(id, selected, room) {
-  return `<label>${id === 'personaA' ? 'Debater A' : 'Debater B'}</label><select id="${id}">${personasForRoom(room).map((p) => `<option value="${h(p.id)}" ${selected === p.id ? 'selected' : ''}>${h(personaLabel(p))}</option>`).join('')}</select>`;
+function debaterSlotSelectHtml(id, debater, room, canEdit) {
+  const selected = debaterSelectionValue(debater) || `ai:${personasForRoom(room)[id === 'debaterA' ? 0 : 1]?.id || ''}`;
+  const aiOptions = personasForRoom(room).map((p) => `<option value="ai:${h(p.id)}" ${selected === `ai:${p.id}` ? 'selected' : ''}>${h(personaLabel(p))}</option>`).join('');
+  const lobbyOptions = lobbyPlayers(room).map((p) => {
+    const suffix = [p.isHost ? 'Host' : '', p.id === state.session?.playerId ? 'You' : ''].filter(Boolean).join(', ');
+    return `<option value="human:${h(p.id)}" ${selected === `human:${p.id}` ? 'selected' : ''}>${h(p.displayName)}${suffix ? ` (${h(suffix)})` : ''}</option>`;
+  }).join('');
+  return `<label>${id === 'debaterA' ? 'Debater A' : 'Debater B'}</label><select id="${id}" data-role="debater-slot" ${canEdit ? '' : 'disabled'}><optgroup label="AI debaters">${aiOptions}</optgroup><optgroup label="Lobby">${lobbyOptions}</optgroup></select>`;
+}
+
+function debaterSelectionValue(debater) {
+  if (!debater) return '';
+  if (debater.kind === 'human' && debater.playerId) return `human:${debater.playerId}`;
+  if (debater.personaId) return `ai:${debater.personaId}`;
+  return '';
 }
 
 function personasForRoom(room) {
   return [...state.personas, ...((room?.customPersonas || []))];
+}
+
+function parseDebaterSelection(value) {
+  const [kind, id] = String(value || '').split(':');
+  if (kind === 'ai' && id) return { kind, personaId: id };
+  if (kind === 'human' && id) return { kind, playerId: id };
+  throw new Error('Choose one AI debater and one lobby player.');
+}
+
+function isMixedDebaterSelection(a, b) {
+  try {
+    const slots = [parseDebaterSelection(a), parseDebaterSelection(b)];
+    return slots.filter((slot) => slot.kind === 'human').length === 1 && slots.filter((slot) => slot.kind === 'ai').length === 1;
+  } catch {
+    return false;
+  }
+}
+
+function syncDebaterAssignmentButton() {
+  const button = document.getElementById('assignDebatersButton');
+  if (!button || button.disabled && !state.room?.topic) return;
+  const a = document.getElementById('debaterA')?.value;
+  const b = document.getElementById('debaterB')?.value;
+  const locked = state.room?.running || ['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(state.room?.status);
+  button.disabled = !state.room?.topic || locked || !isMixedDebaterSelection(a, b);
 }
 
 function personaLabel(persona) {
@@ -536,9 +641,13 @@ function bindRoom() {
   markPendingControls();
   for (const el of document.querySelectorAll('[data-action]')) {
     el.addEventListener('click', async (event) => {
-      await handleAction(event.currentTarget.dataset.action, { marketId: event.currentTarget.dataset.marketId, topicId: event.currentTarget.dataset.topicId, cardId: event.currentTarget.dataset.cardId, mode: event.currentTarget.dataset.mode });
+      await handleAction(event.currentTarget.dataset.action, { marketId: event.currentTarget.dataset.marketId, topicId: event.currentTarget.dataset.topicId, cardId: event.currentTarget.dataset.cardId, mode: event.currentTarget.dataset.mode, pendingTurnId: event.currentTarget.dataset.pendingTurnId });
     });
   }
+  for (const select of document.querySelectorAll('[data-role="debater-slot"]')) {
+    select.addEventListener('change', syncDebaterAssignmentButton);
+  }
+  syncDebaterAssignmentButton();
 }
 
 async function handleAction(action, payload = {}) {
@@ -565,8 +674,9 @@ async function handleAction(action, payload = {}) {
     customTopic: document.getElementById('customTopic')?.value || '',
     customPersonaName: document.getElementById('customPersonaName')?.value || '',
     customPersonaProfile: document.getElementById('customPersonaProfile')?.value || '',
-    personaAId: document.getElementById('personaA')?.value,
-    personaBId: document.getElementById('personaB')?.value,
+    debaterA: document.getElementById('debaterA')?.value,
+    debaterB: document.getElementById('debaterB')?.value,
+    humanTurnText: document.getElementById('humanTurnText')?.value || '',
     betAmount: Number(document.getElementById('betAmount')?.value || 100),
   };
   await runAction(action, async () => {
@@ -576,7 +686,7 @@ async function handleAction(action, payload = {}) {
       case 'selectTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { topicId: payload.topicId } }); state.message = 'Topic selected.'; break;
       case 'setCustomTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { customTopic: inputs.customTopic } }); state.message = 'Custom topic selected.'; break;
       case 'setReadability': data = await api(`${roomPath}/readability`, { method: 'POST', host: true, body: { mode: payload.mode } }); state.message = `Audience set to ${payload.mode === 'kids' ? 'Kids' : 'Classic'}.`; break;
-      case 'setPersonas': data = await api(`${roomPath}/personas`, { method: 'POST', host: true, body: { personaAId: inputs.personaAId, personaBId: inputs.personaBId } }); state.message = 'Debaters assigned.'; break;
+      case 'setPersonas': data = await api(`${roomPath}/debaters`, { method: 'POST', host: true, body: { debaterA: parseDebaterSelection(inputs.debaterA), debaterB: parseDebaterSelection(inputs.debaterB) } }); state.message = 'Debaters assigned.'; break;
       case 'createCustomDebater':
         validateCustomDebaterInputs(inputs.customPersonaName, inputs.customPersonaProfile);
         data = await api(`${roomPath}/personas/custom`, { method: 'POST', host: true, body: { name: inputs.customPersonaName, profile: inputs.customPersonaProfile } });
@@ -597,6 +707,11 @@ async function handleAction(action, payload = {}) {
       case 'resetRoom': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: true } }); state.message = 'Room reset.'; break;
       case 'resetBankrolls': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: false } }); state.message = 'Room and bankrolls reset.'; break;
       case 'placeBet': data = await api(`${roomPath}/bets`, { method: 'POST', body: { playerId: state.session.playerId, marketId: payload.marketId, amount: inputs.betAmount } }); state.message = 'Bet placed.'; break;
+      case 'submitHumanTurn':
+        validateHumanTurnInput(inputs.humanTurnText);
+        data = await api(`${roomPath}/turns/human`, { method: 'POST', body: { playerId: state.session.playerId, pendingTurnId: payload.pendingTurnId || state.room?.pendingHumanTurn?.id, text: inputs.humanTurnText } });
+        state.message = 'Turn submitted.';
+        break;
       case 'submitHeckle': data = await api(`${roomPath}/heckles`, { method: 'POST', body: { playerId: state.session.playerId, cardId: payload.cardId } }); state.message = 'Heckle card bought.'; break;
       default: return;
     }
@@ -604,11 +719,17 @@ async function handleAction(action, payload = {}) {
   });
 }
 
-function validateCustomDebaterInputs(name, profile) {
+function validateCustomDebaterInputs(name, description) {
   const cleanName = String(name || '').replace(/\s+/g, ' ').trim();
-  const cleanProfile = String(profile || '').replace(/\s+/g, ' ').trim();
+  const cleanDescription = String(description || '').replace(/\s+/g, ' ').trim();
   if (cleanName.length < 2 || cleanName.length > 48) throw new Error('Debater name must be 2-48 characters.');
-  if (cleanProfile.length < 10 || cleanProfile.length > 600) throw new Error('Debater profile must be 10-600 characters.');
+  if (cleanDescription.length < 10 || cleanDescription.length > 600) throw new Error('Debater description must be 10-600 characters.');
+}
+
+function validateHumanTurnInput(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (clean.length < 2) throw new Error('Type your turn before submitting.');
+  if (clean.length > 1400) throw new Error('Human turn must be 1,400 characters or fewer.');
 }
 
 function markPendingControls() {
@@ -644,6 +765,7 @@ function actionLabel(action) {
     resetRoom: 'Resetting room',
     resetBankrolls: 'Resetting bankrolls',
     placeBet: 'Placing bet',
+    submitHumanTurn: 'Submitting turn',
     submitHeckle: 'Buying heckle card',
   };
   return labels[action] || 'Working';
@@ -662,6 +784,51 @@ async function runAction(action, fn) {
     state.pendingAction = '';
     render();
   }
+}
+
+function syncCountdownTimer() {
+  const hasPending = Boolean(state.room?.pendingHumanTurn);
+  if (hasPending && !state.countdownTimer) {
+    state.countdownTimer = setInterval(updateCountdownDisplay, 500);
+  }
+  if (!hasPending && state.countdownTimer) {
+    clearInterval(state.countdownTimer);
+    state.countdownTimer = null;
+  }
+  updateCountdownDisplay();
+}
+
+function updateCountdownDisplay() {
+  const pending = state.room?.pendingHumanTurn;
+  if (!pending) return;
+  const remaining = formatCountdown(remainingMs(pending));
+  const pct = countdownPercent(pending);
+  for (const el of document.querySelectorAll('[data-countdown]')) {
+    el.textContent = remainingMs(pending) <= 0 ? 'Time expired' : remaining;
+  }
+  for (const el of document.querySelectorAll('[data-countdown-meter]')) {
+    el.style.width = `${pct}%`;
+  }
+  const textarea = document.getElementById('humanTurnText');
+  if (textarea && !textarea.value) textarea.placeholder = `${remaining} left before AI fill-in. Type your turn here.`;
+}
+
+function remainingMs(pending) {
+  return Math.max(0, Date.parse(pending?.expiresAt || '') - Date.now());
+}
+
+function countdownPercent(pending) {
+  const start = Date.parse(pending?.startedAt || '');
+  const end = Date.parse(pending?.expiresAt || '');
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return remainingMs(pending) > 0 ? 100 : 0;
+  return clamp((remainingMs(pending) / (end - start)) * 100, 0, 100);
+}
+
+function formatCountdown(ms) {
+  const total = Math.ceil(Math.max(0, ms) / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = String(total % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
 }
 
 function currentPlayer(room) { return room.players.find((p) => p.id === state.session?.playerId) || room.players[0]; }
