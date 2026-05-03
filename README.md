@@ -7,8 +7,9 @@ The host creates a room, chooses a ridiculous debate proposition, lets the app p
 ## Included in this MVP
 
 - Zero-build Node server using native `http` and native `fetch`
-- Static browser UI; no npm dependencies
-- In-memory room state
+- Static browser UI with a minimal Node server dependency footprint
+- In-memory room state locally, with optional Redis/Valkey room snapshots for hosted deployments
+- Optional shared invite-code gate for hosted deployments
 - Server-Sent Events for live room updates
 - Host and audience views
 - Join-by-room-code flow
@@ -103,17 +104,48 @@ node tests/smoke.mjs
 
 In mock mode, the OpenAI smoke endpoint will not call OpenAI. With an API key, it performs a tiny structured-output request.
 
+## Render deployment
+
+This app must be hosted as a Node web service, not a static site. It uses API routes, Server-Sent Events, and server-side OpenAI calls.
+
+Recommended first launch on Render:
+
+- Web Service: `ai-debate-casino`, Node, Starter plan
+- Key Value: `ai-debate-casino-rooms`, Starter plan, same region as the web service
+- Build command: `npm ci && npm run check`
+- Start command: `npm start`
+- Health check path: `/api/health`
+
+Set these Render environment variables:
+
+```text
+OPENAI_API_KEY=<server-side OpenAI API key>
+REDIS_URL=<Render internal Key Value URL>
+REQUIRE_PERSISTENCE=true
+SITE_ACCESS_CODE=<shared invite code>
+SESSION_SECRET=<long random secret>
+NODE_VERSION=22
+DEBATE_SCRIPT=fast
+```
+
+Do not set a fixed `PORT` on Render. Render provides it, and the server binds to `0.0.0.0`.
+
+Room persistence stores lobby snapshots in Redis/Valkey after room mutations. Finished rooms, players, bankrolls, custom debaters, bets, transcripts, verdicts, and results survive restarts. If the server restarts during an active debate or while a human turn timer is waiting, the room is marked interrupted/resettable instead of resuming the in-flight model call.
+
+When `SITE_ACCESS_CODE` is set, the browser shows an invite-code screen before any room APIs can be used. The OpenAI key remains server-side only.
+
 ## Important limitations
 
-- In-memory state disappears when the Node process restarts.
+- Without `REDIS_URL`, in-memory state disappears when the Node process restarts.
+- Active debate generation and human-turn timers do not resume across restarts; interrupted rooms must be reset.
 - Host token is stored in browser local storage; this is not production authentication.
 - Fake chips only. No real-money betting, no prizes, no cash value.
 - AI moderation is demo-grade, not production-grade.
-- There is no persistence, database, or deployment hardening yet.
+- The invite code is a simple shared gate, not user accounts or role-based authentication.
 
 ## Good next upgrades
 
-- Persist rooms in SQLite, Redis, or Supabase.
+- Add full user accounts and per-host room ownership.
 - Add voice playback for debaters and judge.
 - Add generated match posters.
 - Add tournament brackets.

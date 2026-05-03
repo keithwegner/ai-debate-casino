@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { createClient } from 'redis';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,6 +13,7 @@ const publicDir = path.join(__dirname, 'public');
 loadDotEnv(path.join(__dirname, '.env'));
 
 const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || '0.0.0.0';
 const OPENAI_KEY_STATUS = classifyOpenAIKey(process.env.OPENAI_API_KEY);
 const OPENAI_API_KEY = OPENAI_KEY_STATUS.value;
 const MODEL_DEFAULT = process.env.OPENAI_MODEL || 'gpt-5.5';
@@ -34,11 +36,25 @@ const STREAM_TICK_MS = 140;
 const MOCK_REQUESTED = process.env.MOCK_AI === 'true';
 const MOCK_AI = MOCK_REQUESTED || !OPENAI_KEY_STATUS.usable;
 const MOCK_REASON = MOCK_REQUESTED ? 'MOCK_AI=true' : OPENAI_KEY_STATUS.reason;
+const REDIS_URL = String(process.env.REDIS_URL || '').trim();
+const REQUIRE_PERSISTENCE = process.env.REQUIRE_PERSISTENCE === 'true';
+const ROOM_STORAGE_NAMESPACE = cleanStorageNamespace(process.env.ROOM_STORAGE_NAMESPACE || 'ai-debate-casino');
+const ROOM_INDEX_KEY = `${ROOM_STORAGE_NAMESPACE}:rooms`;
+const ROOM_KEY_PREFIX = `${ROOM_STORAGE_NAMESPACE}:room:`;
+const SITE_ACCESS_CODE = String(process.env.SITE_ACCESS_CODE || '').trim();
+const SESSION_SECRET = String(process.env.SESSION_SECRET || '').trim();
+const ACCESS_COOKIE = 'adc_access';
+const ACCESS_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
 const rooms = new Map();
 const subscribers = new Map();
 const humanTurnWaiters = new Map();
 const READABILITY_MODES = new Set(['classic', 'kids']);
+let redisClient = null;
+let persistenceConnected = false;
+let persistenceError = '';
+let pendingPersistenceWrites = 0;
+let persistenceChain = Promise.resolve();
 
 const PERSONAS = [
   { id: 'formal_logician', displayName: 'Professor Steelman', archetype: 'Formal Logician', tagline: 'Precise. Numbered. Slightly disappointed.', style: 'Structured, exacting, calm, logical, low-flash. Uses numbered premises and calls out sloppy inference.', strengths: ['logical coherence', 'topic control', 'fallacy detection'], weaknesses: ['low humor', 'can sound bloodless'] },
@@ -99,6 +115,14 @@ function classifyOpenAIKey(value) {
   if (/^(sk-your-api-key-here|your-api-key|changeme|replace-me)$/i.test(key)) return { usable: false, reason: 'OPENAI_API_KEY is still a placeholder', value: '' };
   if (key.length < 20 || !key.startsWith('sk-')) return { usable: false, reason: 'OPENAI_API_KEY does not look like an OpenAI API key', value: '' };
   return { usable: true, reason: 'OPENAI_API_KEY configured', value: key };
+}
+
+function cleanStorageNamespace(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'ai-debate-casino';
 }
 
 const now = () => new Date().toISOString();
@@ -192,6 +216,7 @@ function touch(room) {
   room.updatedAt = now();
   room.version += 1;
   broadcast(room);
+  queuePersistRoom(room);
 }
 
 function pushComment(room) {
@@ -203,6 +228,89 @@ function setPhase(room, status, phase) {
   room.currentPhase = phase;
   room.phaseStartedAt = now();
   touch(room);
+}
+
+function roomKey(roomId) {
+  return `${ROOM_KEY_PREFIX}${String(roomId || '').toUpperCase()}`;
+}
+
+function serializeRoom(room) {
+  return {
+    ...room,
+    streamingTurn: null,
+    pendingHumanTurn: room.pendingHumanTurn ? { ...room.pendingHumanTurn } : null,
+  };
+}
+
+function reviveRoom(rawRoom) {
+  const room = {
+    id: String(rawRoom?.id || '').toUpperCase(),
+    hostToken: rawRoom?.hostToken || id('host_'),
+    status: rawRoom?.status || 'LOBBY',
+    currentPhase: rawRoom?.currentPhase || 'Lobby',
+    phaseStartedAt: rawRoom?.phaseStartedAt || now(),
+    createdAt: rawRoom?.createdAt || now(),
+    updatedAt: rawRoom?.updatedAt || now(),
+    version: Number(rawRoom?.version || 1),
+    players: Array.isArray(rawRoom?.players) ? rawRoom.players : [],
+    topics: Array.isArray(rawRoom?.topics) ? rawRoom.topics : [],
+    topic: rawRoom?.topic || null,
+    debaters: Array.isArray(rawRoom?.debaters) ? rawRoom.debaters : [],
+    customPersonas: Array.isArray(rawRoom?.customPersonas) ? rawRoom.customPersonas : [],
+    pendingCustomPersona: rawRoom?.pendingCustomPersona || null,
+    markets: Array.isArray(rawRoom?.markets) ? rawRoom.markets : [],
+    bets: Array.isArray(rawRoom?.bets) ? rawRoom.bets : [],
+    heckles: Array.isArray(rawRoom?.heckles) ? rawRoom.heckles : [],
+    turns: Array.isArray(rawRoom?.turns) ? rawRoom.turns : [],
+    streamingTurn: null,
+    pendingHumanTurn: rawRoom?.pendingHumanTurn || null,
+    verdict: rawRoom?.verdict || null,
+    settlements: rawRoom?.settlements || null,
+    running: Boolean(rawRoom?.running),
+    error: rawRoom?.error || null,
+    readabilityMode: rawRoom?.readabilityMode === 'kids' ? 'kids' : 'classic',
+  };
+  if (!room.id) return null;
+  if (!room.players.length) room.players = [createPlayer('Host', true, false)];
+  const interrupted = room.running || ACTIVE_ROOM_STATUSES.has(room.status) || room.pendingHumanTurn || rawRoom?.streamingTurn;
+  if (interrupted) markRoomInterrupted(room);
+  return room;
+}
+
+const ACTIVE_ROOM_STATUSES = new Set(['BETTING_LOCKED', 'DEBATE', 'JUDGING', 'SETTLEMENT']);
+
+function markRoomInterrupted(room) {
+  clearPendingHumanTurn(room, { cancelled: true });
+  room.running = false;
+  room.streamingTurn = null;
+  room.pendingHumanTurn = null;
+  room.status = 'ERROR';
+  room.currentPhase = 'Interrupted';
+  room.phaseStartedAt = now();
+  room.error = 'This room was interrupted by a server restart or deploy. Reset the room to start a fresh round.';
+  room.version = Number(room.version || 1) + 1;
+  room.updatedAt = now();
+}
+
+function queuePersistRoom(room) {
+  if (!redisClient || !persistenceConnected) return;
+  const snapshot = serializeRoom(room);
+  pendingPersistenceWrites += 1;
+  persistenceChain = persistenceChain
+    .then(async () => {
+      await redisClient.multi()
+        .sAdd(ROOM_INDEX_KEY, snapshot.id)
+        .set(roomKey(snapshot.id), JSON.stringify(snapshot))
+        .exec();
+      persistenceError = '';
+    })
+    .catch((error) => {
+      persistenceError = error?.message || 'Redis persistence failed.';
+      console.error('Redis persistence failed:', error);
+    })
+    .finally(() => {
+      pendingPersistenceWrites = Math.max(0, pendingPersistenceWrites - 1);
+    });
 }
 
 function publicRoom(room) {
@@ -279,8 +387,8 @@ function updateReadability(room, value) {
   pushComment(room, `Audience readability set to ${readabilityLabel(mode)}.`);
 }
 
-function sendJson(res, status, payload) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function sendJson(res, status, payload, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(payload, null, 2));
 }
 
@@ -301,7 +409,68 @@ function healthPayload() {
     humanTurnTimeoutMs: HUMAN_TURN_TIMEOUT_MS,
     transcriptStreamCps: TRANSCRIPT_STREAM_CPS,
     debateBotPauseMs: DEBATE_BOT_PAUSE_MS,
+    persistence: {
+      mode: REDIS_URL ? 'redis' : 'memory',
+      required: REQUIRE_PERSISTENCE,
+      redisConfigured: Boolean(REDIS_URL),
+      redisConnected: persistenceConnected,
+      pendingWrites: pendingPersistenceWrites,
+      lastError: persistenceError,
+      namespace: ROOM_STORAGE_NAMESPACE,
+      roomCount: rooms.size,
+    },
+    access: {
+      required: accessRequired(),
+      cookieName: ACCESS_COOKIE,
+    },
   };
+}
+
+function accessRequired() {
+  return Boolean(SITE_ACCESS_CODE);
+}
+
+function accessPayload(req) {
+  return { required: accessRequired(), authenticated: hasAccess(req) };
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(String(req.headers.cookie || '').split(';').map((part) => {
+    const idx = part.indexOf('=');
+    if (idx === -1) return ['', ''];
+    return [part.slice(0, idx).trim(), decodeURIComponent(part.slice(idx + 1).trim())];
+  }).filter(([key]) => key));
+}
+
+function signAccessStamp(stamp) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(`access:${stamp}`).digest('base64url');
+}
+
+function constantTimeEqual(a, b) {
+  const left = Buffer.from(String(a || ''));
+  const right = Buffer.from(String(b || ''));
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function hasAccess(req) {
+  if (!accessRequired()) return true;
+  const token = parseCookies(req)[ACCESS_COOKIE] || '';
+  const [stampRaw, sig] = token.split('.');
+  const stamp = Number(stampRaw);
+  if (!Number.isFinite(stamp) || !sig) return false;
+  if (Date.now() - stamp > ACCESS_MAX_AGE_SECONDS * 1000) return false;
+  return constantTimeEqual(sig, signAccessStamp(stampRaw));
+}
+
+function accessCookie(req) {
+  const stamp = String(Date.now());
+  const secure = req.headers['x-forwarded-proto'] === 'https' || process.env.RENDER === 'true';
+  return `${ACCESS_COOKIE}=${encodeURIComponent(`${stamp}.${signAccessStamp(stamp)}`)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ACCESS_MAX_AGE_SECONDS}${secure ? '; Secure' : ''}`;
+}
+
+function requireAccess(req) {
+  if (!hasAccess(req)) throw apiError(401, 'Invite code required.');
 }
 
 async function readJson(req) {
@@ -339,6 +508,14 @@ async function handleApi(req, res, url) {
     const pathName = url.pathname;
 
     if (method === 'GET' && pathName === '/api/health') return sendJson(res, 200, healthPayload());
+    if (method === 'GET' && pathName === '/api/access') return sendJson(res, 200, accessPayload(req));
+    if (method === 'POST' && pathName === '/api/access') {
+      if (!accessRequired()) return sendJson(res, 200, accessPayload(req));
+      const body = await readJson(req);
+      if (!constantTimeEqual(String(body.code || '').trim(), SITE_ACCESS_CODE)) throw apiError(403, 'Invalid invite code.');
+      return sendJson(res, 200, { required: true, authenticated: true }, { 'Set-Cookie': accessCookie(req) });
+    }
+    requireAccess(req);
     if (method === 'GET' && pathName === '/api/personas') return sendJson(res, 200, { personas: PERSONAS, heckleCards: HECKLE_CARDS });
     if (method === 'POST' && pathName === '/api/openai-smoke') return sendJson(res, 200, await openAISmoke());
 
@@ -1777,13 +1954,74 @@ function hashNumber(input) {
 function shuffle(items) { return [...items].sort(() => Math.random() - 0.5); }
 function escapeRegExp(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+function validateStartupConfig() {
+  if (REQUIRE_PERSISTENCE && !REDIS_URL) throw new Error('REQUIRE_PERSISTENCE=true but REDIS_URL is not set.');
+  if (accessRequired() && SESSION_SECRET.length < 16) throw new Error('SITE_ACCESS_CODE requires SESSION_SECRET with at least 16 characters.');
+}
+
+async function initPersistence() {
+  if (!REDIS_URL) return;
+  redisClient = createClient({ url: REDIS_URL });
+  redisClient.on('error', (error) => {
+    persistenceConnected = false;
+    persistenceError = error?.message || 'Redis client error.';
+    console.error('Redis client error:', error);
+  });
+  await redisClient.connect();
+  persistenceConnected = true;
+  persistenceError = '';
+  await loadPersistedRooms();
+}
+
+async function loadPersistedRooms() {
+  const roomIds = await redisClient.sMembers(ROOM_INDEX_KEY);
+  let loaded = 0;
+  for (const roomId of roomIds) {
+    const raw = await redisClient.get(roomKey(roomId));
+    if (!raw) continue;
+    try {
+      const room = reviveRoom(JSON.parse(raw));
+      if (!room) continue;
+      rooms.set(room.id, room);
+      loaded += 1;
+      if (room.status === 'ERROR' && room.error?.includes('interrupted')) queuePersistRoom(room);
+    } catch (error) {
+      console.error(`Failed to load persisted room ${roomId}:`, error);
+    }
+  }
+  console.log(`Loaded ${loaded} persisted room${loaded === 1 ? '' : 's'} from Redis.`);
+}
+
+async function flushPersistence() {
+  try {
+    await persistenceChain;
+  } catch {
+    // Errors are captured on the chain so shutdown can continue.
+  }
+}
+
+async function shutdown(signal) {
+  console.log(`${signal} received. Flushing persistence and shutting down.`);
+  await flushPersistence();
+  if (redisClient?.isOpen) await redisClient.quit().catch(() => redisClient.disconnect());
+  process.exit(0);
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   if (url.pathname.startsWith('/api/')) handleApi(req, res, url);
   else serveStatic(req, res, url);
 });
 
-server.listen(PORT, () => {
-  console.log(`AI Debate Casino running at http://localhost:${PORT}`);
+validateStartupConfig();
+await initPersistence();
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+server.listen(PORT, HOST, () => {
+  console.log(`AI Debate Casino running at http://${HOST}:${PORT}`);
   console.log(`AI mode: ${MOCK_AI ? 'mock fallback' : `OpenAI setup=${MODEL_SETUP}, debate=${MODEL_DEBATE}, judge=${MODEL_JUDGE}`}`);
+  console.log(`Persistence: ${REDIS_URL ? `redis namespace=${ROOM_STORAGE_NAMESPACE}` : 'memory'}${REQUIRE_PERSISTENCE ? ' (required)' : ''}`);
+  console.log(`Access gate: ${accessRequired() ? 'enabled' : 'disabled'}`);
 });

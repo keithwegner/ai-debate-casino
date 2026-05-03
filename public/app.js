@@ -4,6 +4,7 @@ const queryRoomId = new URLSearchParams(location.search).get('room')?.trim().toU
 
 let state = {
   session: readSession(),
+  access: { required: false, authenticated: true },
   room: null,
   personas: [],
   error: '',
@@ -60,12 +61,17 @@ function initAmbientMotion() {
 }
 
 async function init() {
+  await loadAccess();
+  if (!needsAccess()) await bootstrapRoomData();
+  render();
+}
+
+async function bootstrapRoomData() {
   await loadPersonas();
   if (state.session?.roomId) {
     await loadRoom();
     startLiveUpdates();
   }
-  render();
 }
 
 function readSession() {
@@ -85,11 +91,28 @@ async function api(path, options = {}) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
   if (!response.ok) {
+    if (response.status === 401) {
+      state.access = { required: true, authenticated: false };
+      stopLiveUpdates();
+    }
     const error = new Error(data.error || `Request failed: ${response.status}`);
     error.status = response.status;
     throw error;
   }
   return data;
+}
+
+async function loadAccess() {
+  try {
+    state.access = await api('/api/access');
+  } catch (e) {
+    state.access = { required: false, authenticated: true };
+    state.error = e.message;
+  }
+}
+
+function needsAccess() {
+  return Boolean(state.access?.required && !state.access?.authenticated);
 }
 
 async function loadPersonas() {
@@ -151,6 +174,12 @@ function stopLiveUpdates() {
 }
 
 function render() {
+  if (needsAccess()) {
+    root.innerHTML = accessHtml();
+    bindAccess();
+    syncCountdownTimer();
+    return;
+  }
   if (!state.session) {
     root.innerHTML = landingHtml();
     bindLanding();
@@ -165,6 +194,28 @@ function render() {
   root.innerHTML = roomHtml(state.room);
   bindRoom();
   syncCountdownTimer();
+}
+
+function accessHtml() {
+  return `
+    <main class="shell landing access-shell">
+      <section class="hero casino-hero access-hero">
+        <div class="marquee-band" aria-hidden="true"></div>
+        <div class="hero-copy">
+          <div class="casino-mark" aria-hidden="true"><span>AI</span></div>
+          <div class="kicker">Invite required</div>
+          <h1>AI Debate Casino</h1>
+          <p class="lede">Enter the host-provided access code to open the table.</p>
+        </div>
+        ${flashHtml()}
+        <form id="accessForm" class="form-card cashier-card access-card">
+          <h2>Access code</h2>
+          <label>Invite code</label>
+          <input name="code" type="password" autocomplete="current-password" required autofocus />
+          <button class="primary" type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('accessCode', 'Enter')}</button>
+        </form>
+      </section>
+    </main>`;
 }
 
 function landingHtml() {
@@ -618,6 +669,18 @@ function flashHtml() {
   return `${state.error ? `<div class="flash error">${h(state.error)}</div>` : ''}${state.message ? `<div class="flash success">${h(state.message)}</div>` : ''}`;
 }
 
+function bindAccess() {
+  document.getElementById('accessForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await runAction('accessCode', async () => {
+      state.access = await api('/api/access', { method: 'POST', body: { code: form.get('code') } });
+      await bootstrapRoomData();
+      state.message = 'Access granted.';
+    });
+  });
+}
+
 function bindLanding() {
   document.getElementById('createForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -755,6 +818,7 @@ function buttonContent(action, label) {
 
 function actionLabel(action) {
   const labels = {
+    accessCode: 'Checking invite',
     createRoom: 'Opening the table',
     joinRoom: 'Taking a seat',
     generateTopics: 'Generating topics',
