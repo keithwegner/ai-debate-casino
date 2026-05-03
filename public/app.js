@@ -346,11 +346,18 @@ function assignedDebaterSlotForPlayer(room, playerId) {
 }
 
 function transcriptHtml(room) {
-  if (!room.turns?.length) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
-  return `<section class="transcript"><h3>Live transcript</h3>${room.turns.map((t) => `<article class="turn ${t.speakerDebaterId}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div>${formattedTextHtml(t.text)}</article>`).join('')}</section>`;
+  const turns = [...(room.turns || []), ...(room.streamingTurn ? [{ ...room.streamingTurn, streaming: true }] : [])];
+  if (!turns.length) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
+  return `<section class="transcript"><h3>Live transcript</h3>${turns.map(turnHtml).join('')}</section>`;
+}
+
+function turnHtml(t) {
+  const body = t.text ? formattedTextHtml(t.text) : '<p class="typing-placeholder">Preparing response...</p>';
+  return `<article class="turn ${t.speakerDebaterId} ${t.streaming ? 'streaming-turn' : ''}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div>${body}</article>`;
 }
 
 function turnSourceHtml(turn) {
+  if (turn.streaming) return '<span class="source-chip streaming">Typing</span>';
   if (turn.timeoutFilled) return '<span class="source-chip timeout">AI fill-in</span>';
   if (turn.source === 'human') return '<span class="source-chip human">Typed live</span>';
   return '';

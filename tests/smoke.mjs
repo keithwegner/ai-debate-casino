@@ -28,12 +28,22 @@ function normalizePersonaLabelPart(value) {
 }
 
 async function waitForResults(roomId) {
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 180; i++) {
     const { room } = await api(`/api/rooms/${roomId}`);
     if (room.status === 'RESULTS') return room;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error(`Room ${roomId} did not reach RESULTS in time.`);
+}
+
+async function waitForStreamingTurn(roomId) {
+  for (let i = 0; i < 120; i++) {
+    const { room } = await api(`/api/rooms/${roomId}`);
+    if (room.streamingTurn?.text) return room;
+    if (room.status === 'RESULTS') break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Room ${roomId} did not expose an active streaming turn.`);
 }
 
 async function waitForPendingHumanTurn(roomId) {
@@ -116,6 +126,8 @@ async function createHumanDebateRoom(label = 'Human Smoke Host') {
 
 const health = await api('/api/health');
 const personas = await api('/api/personas');
+if (typeof health.transcriptStreamCps !== 'number') throw new Error('Health payload did not expose transcript streaming speed.');
+if (typeof health.debateBotPauseMs !== 'number') throw new Error('Health payload did not expose debate bot pause.');
 const expectedNewPersonas = ['spreadsheet_oracle', 'sentient_vending_machine', 'cursed_intern', 'suburban_warlord', 'crypto_court_jester', 'museum_docent_doom', 'weather_app_shaman', 'powerpoint_necromancer', 'elevator_philosopher', 'mall_santa_auditor'];
 for (const personaId of expectedNewPersonas) {
   if (!personas.personas.some((p) => p.id === personaId)) throw new Error(`Missing new built-in persona ${personaId}.`);
@@ -125,6 +137,21 @@ for (const persona of personas.personas) {
     throw new Error(`Redundant persona label for ${persona.id}: ${persona.displayName} / ${persona.archetype}`);
   }
 }
+
+if (health.mode === 'mock' && Number(health.transcriptStreamCps || 0) <= 120) {
+  const streamingRun = await runConfiguredRound('classic');
+  const activeRoom = await waitForStreamingTurn(streamingRun.roomId);
+  const active = activeRoom.streamingTurn;
+  if (!active?.streaming) throw new Error('Active transcript turn was not marked as streaming.');
+  if (activeRoom.turns.some((turn) => turn.id === active.id)) throw new Error('Streaming turn was prematurely stored in completed turns.');
+  const partialText = active.text;
+  const completedRoom = await waitForResults(streamingRun.roomId);
+  const completedTurn = completedRoom.turns.find((turn) => turn.id === active.id);
+  if (!completedTurn) throw new Error('Streaming turn did not become a completed transcript turn.');
+  if (completedRoom.streamingTurn) throw new Error('Streaming turn was not cleared after debate completion.');
+  if (!completedTurn.text.startsWith(partialText.slice(0, Math.min(20, partialText.length)))) throw new Error('Completed turn did not preserve streamed text.');
+}
+
 const created = await api('/api/rooms', { method: 'POST', body: { displayName: 'Smoke Host' } });
 const roomId = created.room.id;
 const hostToken = created.hostToken;
