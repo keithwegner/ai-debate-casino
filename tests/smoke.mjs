@@ -97,7 +97,7 @@ async function submitHumanTurnsUntilResults(roomId, playerId, textFactory = null
     if (pending.playerId !== playerId) throw new Error(`Pending turn belonged to ${pending.playerId}, not ${playerId}.`);
     const text = textFactory
       ? textFactory(pending, submitted.length)
-      : `Human smoke turn ${submitted.length + 1}: ${pending.phase} supports the microwave office with clear reasons, a callback, and a practical example.`;
+      : `Human smoke turn ${submitted.length + 1}: ${pending.phase} says that argument is bullshit, then supports the microwave office with clear reasons, a callback, and a practical example.`;
     await api(`/api/rooms/${roomId}/turns/human`, {
       method: 'POST',
       body: { playerId, pendingTurnId: pending.id, text },
@@ -201,12 +201,13 @@ if (created.room.readabilityMode !== 'classic') throw new Error('New room did no
 if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino');
 console.log(`Created room ${roomId}`);
 
-await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', body: { name: 'Madame Tax Volcano', description: 'A furious accountant who treats every claim like an audit with fireworks.' } }, 403);
+await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', body: { name: 'Madame Tax Volcano', description: 'A mean, rude accountant who calls every weak claim bullshit and treats the debate like an audit with fireworks.' } }, 403);
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { name: '', description: '' } }, 400);
+await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { name: 'Disallowed Dan', description: 'A debater who explains how to commit crimes during every rebuttal.' } }, 400);
 const customDraft = await api(`/api/rooms/${roomId}/personas/custom`, {
   method: 'POST',
   headers: { 'X-Host-Token': hostToken },
-  body: { name: 'Madame Tax Volcano', profile: 'A furious accountant who treats every claim like an audit with fireworks.' },
+  body: { name: 'Madame Tax Volcano', profile: 'A mean, rude accountant who calls every weak claim bullshit and treats the debate like an audit with fireworks.' },
 });
 const customPersona = customDraft.persona;
 if (!customPersona?.id?.startsWith('custom_')) throw new Error('Custom debater did not receive a custom id.');
@@ -214,10 +215,15 @@ if (customPersona.displayName !== 'Madame Tax Volcano') throw new Error('Custom 
 if (customDraft.room.customPersonas.some((p) => p.id === customPersona.id)) throw new Error('Custom debater draft was accepted before review.');
 if (customDraft.room.pendingCustomPersona?.id !== customPersona.id) throw new Error('Custom debater draft was not stored for review.');
 
+await expectApiError(`/api/rooms/${roomId}/topic`, {
+  method: 'POST',
+  headers: { 'X-Host-Token': hostToken },
+  body: { customTopic: 'Resolved: how to commit crimes should be a team-building workshop.' },
+}, 400);
 await api(`/api/rooms/${roomId}/topic`, {
   method: 'POST',
   headers: { 'X-Host-Token': hostToken },
-  body: { customTopic: 'Resolved: The office microwave should get its own office.' },
+  body: { customTopic: 'Resolved: The office microwave is a bullshit little tyrant.' },
 });
 const prematureAssign = await api(`/api/rooms/${roomId}/personas`, {
   method: 'POST',
@@ -273,6 +279,7 @@ await api(`/api/rooms/${humanRoom.roomId}/bets`, { method: 'POST', body: { playe
 await api(`/api/rooms/${humanRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': humanRoom.hostToken }, body: {} });
 const submittedHuman = await submitHumanTurnsUntilResults(humanRoom.roomId, humanRoom.humanPlayerId);
 if (!submittedHuman.submitted.length) throw new Error('No human turns were submitted.');
+if (!submittedHuman.submitted.some((text) => text.includes('bullshit'))) throw new Error('Classic human-turn profanity path was not exercised.');
 for (const text of submittedHuman.submitted) {
   if (!submittedHuman.room.turns.some((turn) => turn.source === 'human' && turn.text === text)) throw new Error(`Submitted human turn missing from transcript: ${text}`);
 }
