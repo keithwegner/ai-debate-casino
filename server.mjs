@@ -28,8 +28,9 @@ const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 90000);
 const DEBATE_SCRIPT = String(process.env.DEBATE_SCRIPT || 'full').toLowerCase();
 const HUMAN_TURN_TIMEOUT_MS_RAW = Number(process.env.HUMAN_TURN_TIMEOUT_MS || 90000);
 const HUMAN_TURN_TIMEOUT_MS = Number.isFinite(HUMAN_TURN_TIMEOUT_MS_RAW) ? Math.max(200, HUMAN_TURN_TIMEOUT_MS_RAW) : 90000;
-const TRANSCRIPT_STREAM_CPS_RAW = Number(process.env.TRANSCRIPT_STREAM_CPS || 35);
-const TRANSCRIPT_STREAM_CPS = Number.isFinite(TRANSCRIPT_STREAM_CPS_RAW) ? Math.max(1, TRANSCRIPT_STREAM_CPS_RAW) : 35;
+const TRANSCRIPT_STREAM_CPS_DEFAULT = 18;
+const TRANSCRIPT_STREAM_CPS_RAW = Number(process.env.TRANSCRIPT_STREAM_CPS || TRANSCRIPT_STREAM_CPS_DEFAULT);
+const TRANSCRIPT_STREAM_CPS = Number.isFinite(TRANSCRIPT_STREAM_CPS_RAW) ? Math.max(1, TRANSCRIPT_STREAM_CPS_RAW) : TRANSCRIPT_STREAM_CPS_DEFAULT;
 const DEBATE_BOT_PAUSE_MS_RAW = Number(process.env.DEBATE_BOT_PAUSE_MS || 3000);
 const DEBATE_BOT_PAUSE_MS = Number.isFinite(DEBATE_BOT_PAUSE_MS_RAW) ? Math.max(0, DEBATE_BOT_PAUSE_MS_RAW) : 3000;
 const STREAM_TICK_MS = 140;
@@ -979,7 +980,7 @@ function submitHumanTurn(room, playerId, pendingTurnId, rawText) {
 function validateHumanTurnText(rawText) {
   const text = cleanRichText(rawText, 1400);
   if (text.length < 2) throw apiError(400, 'Human turn text is required.');
-  if (looksUnsafe(text)) throw apiError(400, 'Human turn text appears unsafe or not demo-friendly.');
+  if (hasDisallowedContent(text)) throw apiError(400, 'Human turn text contains disallowed content.');
   return text;
 }
 
@@ -1045,7 +1046,8 @@ function createStreamingTurnWriter(roomId, turnId) {
   let finishText = '';
   let finished = false;
   let resolveFinished = null;
-  const charsPerTick = Math.max(1, Math.ceil((TRANSCRIPT_STREAM_CPS * STREAM_TICK_MS) / 1000));
+  let charBudget = 0;
+  const charsPerTick = (TRANSCRIPT_STREAM_CPS * STREAM_TICK_MS) / 1000;
 
   const clearTimer = () => {
     if (timer) clearInterval(timer);
@@ -1071,8 +1073,14 @@ function createStreamingTurnWriter(roomId, turnId) {
 
   const tick = () => {
     if (queued.length) {
-      visible += queued.slice(0, charsPerTick);
-      queued = queued.slice(charsPerTick);
+      charBudget += charsPerTick;
+      const charsToShow = Math.floor(charBudget);
+      if (charsToShow > 0) {
+        const count = Math.min(charsToShow, queued.length);
+        visible += queued.slice(0, count);
+        queued = queued.slice(count);
+        charBudget -= count;
+      }
       updateVisibleText(visible);
     }
     finishIfDrained();
@@ -1092,6 +1100,7 @@ function createStreamingTurnWriter(roomId, turnId) {
     reset() {
       visible = '';
       queued = '';
+      charBudget = 0;
       finishRequested = false;
       finishText = '';
       finished = false;
@@ -1228,7 +1237,7 @@ async function safeGenerateTopics(prompt) {
       task: 'setup',
       name: 'topic_candidates',
       schema: { type: 'object', additionalProperties: false, properties: { topics: { type: 'array', items: topicSchema() } }, required: ['topics'] },
-      system: 'You are Topic Master for AI Debate Casino, a fake-chip party debate game. Generate safe, absurd, demo-friendly debate topics. Avoid real political persuasion, hate, explicit sexual content, real private people, medical/legal advice, and grim subject matter. Prefer workplace absurdism, technology, philosophy, animals, business parody, and harmless pop-culture-adjacent premises.',
+      system: 'You are Topic Master for AI Debate Casino, a fake-chip party debate game. Generate absurd comedic debate topics for an adult roast-comedy audience. Profanity, rude framing, abrasive fictional premises, and mean-but-playful debate energy are allowed in Classic mode. Avoid real political persuasion, hate, slurs, explicit sexual content, real private people, threats, self-harm, illegal instructions, medical/legal/financial advice, doxxing, and grim subject matter. Prefer workplace absurdism, technology, philosophy, animals, business parody, and harmless pop-culture-adjacent premises.',
       user: `Generate five debate topics. Optional host flavor: ${cleanText(prompt, 240) || '(none)'}`,
       maxOutputTokens: 1600,
     })).topics.slice(0, 5);
@@ -1241,14 +1250,14 @@ async function safeGenerateTopics(prompt) {
 async function safeNormalizeCustomTopic(customTopic) {
   const raw = cleanText(customTopic, 320);
   if (!raw) return rejectTopic('Empty topic.');
-  if (looksUnsafe(raw)) return rejectTopic('The topic appears unsafe or not demo-friendly.');
+  if (hasDisallowedContent(raw)) return rejectTopic('The topic contains disallowed content.');
   if (MOCK_AI) return heuristicTopic(raw);
   try {
     return await openAIStructured({
       task: 'setup',
       name: 'custom_topic_moderation',
       schema: { type: 'object', additionalProperties: false, properties: { decision: { type: 'string', enum: ['allow', 'rewrite', 'reject'] }, reason: { type: 'string' }, resolution: { type: 'string' }, sideA: { type: 'string' }, sideB: { type: 'string' }, category: { type: 'string' }, comedyPotential: { type: 'integer' }, safetyRating: { type: 'string' }, suggestedPersonas: { type: 'array', items: { type: 'string' } } }, required: ['decision', 'reason', 'resolution', 'sideA', 'sideB', 'category', 'comedyPotential', 'safetyRating', 'suggestedPersonas'] },
-      system: 'Moderate and normalize topics for a fake-chip comedic AI debate game. Reject hate, explicit sexual content, self-harm, illegal instructions, targeted harassment, private-person attacks, actionable medical/legal/financial advice, and current-political misinformation. Rewrite mild issues into safe absurd equivalents. Return complete fields even on reject.',
+      system: 'Moderate and normalize topics for a fake-chip comedic AI debate game with an adult Classic mode. Allow profanity, rude fictional premises, harsh jokes, and roast-style wording. Reject hate, slurs, explicit sexual content, self-harm, threats, illegal instructions, targeted harassment of real private people, private-person attacks, doxxing, actionable medical/legal/financial advice, and current-political misinformation. Rewrite mild issues into allowed absurd equivalents. Return complete fields even on reject.',
       user: `Custom topic: ${raw}`,
       maxOutputTokens: 900,
     });
@@ -1271,8 +1280,19 @@ function rejectTopic(reason) {
   return { decision: 'reject', reason, resolution: '', sideA: '', sideB: '', category: '', comedyPotential: 1, safetyRating: 'rejected', suggestedPersonas: [] };
 }
 
-function looksUnsafe(text) {
-  return [/\bkill\b/i, /\bsuicide\b/i, /\bself[- ]?harm\b/i, /\bterror/i, /\bbomb\b/i, /\bchild sexual\b/i, /\bgenocide\b/i, /\bdoxx/i, /\bhow to commit\b/i].some((rx) => rx.test(text));
+function hasDisallowedContent(text) {
+  return [
+    /\bkill\b/i,
+    /\bsuicide\b/i,
+    /\bself[- ]?harm\b/i,
+    /\bterror/i,
+    /\bbomb\b/i,
+    /\bchild sexual\b/i,
+    /\bgenocide\b/i,
+    /\bdoxx/i,
+    /\bhow to commit\b/i,
+    /\b(?:racial|homophobic|antisemitic|anti[- ]?semitic|transphobic)\s+slur\b/i,
+  ].some((rx) => rx.test(text));
 }
 
 function topicSchema() {
@@ -1281,14 +1301,14 @@ function topicSchema() {
 
 async function safeGenerateCustomPersona(room, rawName, rawDescription) {
   const { name, description } = validateCustomPersonaInput(rawName, rawDescription);
-  if (looksUnsafe(name) || looksUnsafe(description)) throw apiError(400, 'Custom debater appears unsafe or not demo-friendly.');
+  if (hasDisallowedContent(name) || hasDisallowedContent(description)) throw apiError(400, 'Custom debater contains disallowed content.');
   if (MOCK_AI) return fallbackCustomPersona(room, name, description);
   try {
     const parsed = await openAIStructured({
       task: 'setup',
       name: 'custom_debater_personality',
       schema: customPersonaSchema(),
-      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one safe, ridiculous, playable debate persona from the submitted debater name and description. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, explicit sexual content, real private people, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
+      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one ridiculous, playable debate persona from the submitted debater name and description for an adult roast-comedy Classic mode. Profanity, rude fictional personalities, abrasive insults, and mean-but-playful debate energy are allowed. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, slurs, explicit sexual content, real private people, threats, self-harm, doxxing, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
       user: JSON.stringify({ name, description, existingPersonas: allPersonas(room).map((p) => ({ displayName: p.displayName, archetype: p.archetype })) }, null, 2),
       maxOutputTokens: 900,
     });
@@ -1454,7 +1474,7 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle, writer = nul
     const latestOpponentAnalysis = analyzeArgumentText(latestOpponent?.text || '');
     const request = {
       task: 'debate',
-      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, explicit sexual content, real-world harmful instructions, and targeted harassment.${debateReadabilityGuidance(room)}`,
+      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. In Classic mode, adult roast-comedy energy is allowed: profanity, harsh fictional insults, smugness, pettiness, and abrasive jokes are fine when they target the opposing argument, the fictional persona, or the absurd premise. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, hate, explicit sexual content, real-world harmful instructions, threats, self-harm, doxxing, attacks on real private people, and targeted harassment of real people.${debateReadabilityGuidance(room)}`,
       user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Opponent's latest turn:\n${latestOpponent ? `${latestOpponent.phase} — ${latestOpponent.speakerName}: ${latestOpponent.text}` : '(No opponent turn yet.)'}`, `Opponent latest-turn quality: ${latestOpponentAnalysis.label}. ${latestOpponentAnalysis.reason}`, `Required response behavior: directly answer the opponent's latest reasoning when it exists. If the latest turn is thin, call that out briefly and build a stronger positive case.`, `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
     };
@@ -1477,12 +1497,12 @@ function cleanupTurn(text, debater) {
 
 function debateReadabilityGuidance(room) {
   if (readabilityMode(room) !== 'kids') return '';
-  return ' Kid-friendly readability mode is on. Write for grades 5-6. Use short sentences, concrete examples, and plain words. Avoid business jargon, legalese, abstract strategy terms, and dense metaphors. Keep the persona flavor and jokes, but make the argument easy for a 10-12 year old to follow. Keep the same debate structure and word limit.';
+  return ' Kid-friendly readability mode is on. Write for grades 5-6. Use short sentences, concrete examples, and plain words. Do not use profanity, slurs, sexual content, personal cruelty, mean personal insults, business jargon, legalese, abstract strategy terms, or dense metaphors. Keep the persona flavor and gentle jokes, but make the argument easy for a 10-12 year old to follow. Keep the same debate structure and word limit.';
 }
 
 function judgeReadabilityGuidance(room) {
   if (readabilityMode(room) !== 'kids') return '';
-  return ' Kid-friendly readability mode is on. Explain the winner in plain grades 5-6 language. Keep the score labels unchanged, but make verdict, bestLine, and worstArgument.summary easy for a 10-12 year old to understand. Use short sentences and concrete reasons.';
+  return ' Kid-friendly readability mode is on. Explain the winner in plain grades 5-6 language. Do not use profanity, slurs, sexual content, personal cruelty, or mean personal insults. Keep the score labels unchanged, but make verdict, bestLine, and worstArgument.summary easy for a 10-12 year old to understand. Use short sentences and concrete reasons.';
 }
 
 function transcriptForPrompt(room) {
