@@ -18,6 +18,8 @@ The host creates a room, chooses a ridiculous debate proposition, lets the app p
 - Fake-chip betting markets
 - Demo audience and demo bot bets
 - Audience heckle cards that influence the next debater turn
+- Audience Jury Mode with live reaction tokens, momentum, and judge comparison
+- Room chat for human players
 - Structured AI judge verdict
 - Deterministic settlement math
 - Leaderboard
@@ -57,9 +59,8 @@ MOCK_AI=true node server.mjs
 ## Recommended hackathon demo flow
 
 1. Create a room.
-2. Choose **Classic** or **Kids** under **Audience**.
-3. Click **One-click demo round**.
-4. Watch the app auto-select a topic, assign personas, post odds, add demo players, place bot bets, run the debate, judge it, settle the bets, and update the leaderboard.
+2. Click **One-click demo round**, or use the host console to choose a topic, assign debaters, and post odds.
+3. Watch the app add demo players, place bot bets, run the debate, judge it, settle the bets, and update the leaderboard.
 
 For a more interactive demo, have audience members join by room code, place fake-chip bets, and buy heckle cards while the debate is running.
 
@@ -130,7 +131,7 @@ DEBATE_SCRIPT=fast
 
 Do not set a fixed `PORT` on Render. Render provides it, and the server binds to `0.0.0.0`.
 
-Room persistence stores lobby snapshots in Redis/Valkey after room mutations. Finished rooms, players, bankrolls, custom debaters, bets, transcripts, verdicts, and results survive restarts. If the server restarts during an active debate or while a human turn timer is waiting, the room is marked interrupted/resettable instead of resuming the in-flight model call.
+Room persistence stores lobby snapshots in Redis/Valkey after room mutations. Finished rooms, players, bankrolls, chat messages, custom debaters, bets, transcripts, verdicts, and results survive restarts. If the server restarts during an active debate or while a human turn timer is waiting, the room is marked interrupted/resettable instead of resuming the in-flight model call.
 
 When `SITE_ACCESS_CODE` is set, the browser shows an invite-code screen before any room APIs can be used. The OpenAI key remains server-side only.
 

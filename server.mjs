@@ -28,7 +28,7 @@ const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 90000);
 const DEBATE_SCRIPT = String(process.env.DEBATE_SCRIPT || 'full').toLowerCase();
 const HUMAN_TURN_TIMEOUT_MS_RAW = Number(process.env.HUMAN_TURN_TIMEOUT_MS || 90000);
 const HUMAN_TURN_TIMEOUT_MS = Number.isFinite(HUMAN_TURN_TIMEOUT_MS_RAW) ? Math.max(200, HUMAN_TURN_TIMEOUT_MS_RAW) : 90000;
-const TRANSCRIPT_STREAM_CPS_DEFAULT = 18;
+const TRANSCRIPT_STREAM_CPS_DEFAULT = 22;
 const TRANSCRIPT_STREAM_CPS_RAW = Number(process.env.TRANSCRIPT_STREAM_CPS || TRANSCRIPT_STREAM_CPS_DEFAULT);
 const TRANSCRIPT_STREAM_CPS = Number.isFinite(TRANSCRIPT_STREAM_CPS_RAW) ? Math.max(1, TRANSCRIPT_STREAM_CPS_RAW) : TRANSCRIPT_STREAM_CPS_DEFAULT;
 const DEBATE_BOT_PAUSE_MS_RAW = Number(process.env.DEBATE_BOT_PAUSE_MS || 3000);
@@ -50,7 +50,6 @@ const ACCESS_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const rooms = new Map();
 const subscribers = new Map();
 const humanTurnWaiters = new Map();
-const READABILITY_MODES = new Set(['classic', 'kids']);
 let redisClient = null;
 let persistenceConnected = false;
 let persistenceError = '';
@@ -92,6 +91,14 @@ const HECKLE_CARDS = [
   { id: 'legal_caveat', label: 'Legal Caveat', cost: 25, instruction: 'Add an absurd but coherent legal caveat.' },
   { id: 'military_metaphor', label: 'Military Metaphor', cost: 25, instruction: 'Use a military metaphor as part of your argument.' },
   { id: 'animal_callback', label: 'Animal Callback', cost: 25, instruction: 'Use a memorable animal comparison or animal callback.' },
+];
+
+const JURY_REACTIONS = [
+  { id: 'strong_logic', label: 'Strong logic', sentiment: 'positive' },
+  { id: 'funny', label: 'Funny', sentiment: 'positive' },
+  { id: 'great_rebuttal', label: 'Great rebuttal', sentiment: 'positive' },
+  { id: 'dodged_point', label: 'Dodged the point', sentiment: 'negative' },
+  { id: 'weak_argument', label: 'Weak argument', sentiment: 'negative' },
 ];
 
 const DEMO_NAMES = ['Marge Odds', 'Chip Skylark', 'The House', 'Parlay Carl', 'Nancy Spread', 'Bankroll Bob', 'Viggy Stardust', 'Wagertron', 'Degen Dolores', 'Rita Risk'];
@@ -199,6 +206,8 @@ function createRoom(hostName) {
     markets: [],
     bets: [],
     heckles: [],
+    chatMessages: [],
+    juryReactions: [],
     turns: [],
     streamingTurn: null,
     pendingHumanTurn: null,
@@ -206,7 +215,6 @@ function createRoom(hostName) {
     settlements: null,
     running: false,
     error: null,
-    readabilityMode: 'classic',
   };
   rooms.set(room.id, room);
   pushComment(room, 'Room created. The table is open.');
@@ -262,6 +270,8 @@ function reviveRoom(rawRoom) {
     markets: Array.isArray(rawRoom?.markets) ? rawRoom.markets : [],
     bets: Array.isArray(rawRoom?.bets) ? rawRoom.bets : [],
     heckles: Array.isArray(rawRoom?.heckles) ? rawRoom.heckles : [],
+    chatMessages: Array.isArray(rawRoom?.chatMessages) ? rawRoom.chatMessages : [],
+    juryReactions: Array.isArray(rawRoom?.juryReactions) ? rawRoom.juryReactions : [],
     turns: Array.isArray(rawRoom?.turns) ? rawRoom.turns : [],
     streamingTurn: null,
     pendingHumanTurn: rawRoom?.pendingHumanTurn || null,
@@ -269,7 +279,6 @@ function reviveRoom(rawRoom) {
     settlements: rawRoom?.settlements || null,
     running: Boolean(rawRoom?.running),
     error: rawRoom?.error || null,
-    readabilityMode: rawRoom?.readabilityMode === 'kids' ? 'kids' : 'classic',
   };
   if (!room.id) return null;
   if (!room.players.length) room.players = [createPlayer('Host', true, false)];
@@ -323,7 +332,6 @@ function publicRoom(room) {
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
     version: room.version,
-    readabilityMode: readabilityMode(room),
     ai: {
       mode: MOCK_AI ? 'mock' : 'openai',
       mockReason: MOCK_AI ? MOCK_REASON : '',
@@ -344,6 +352,9 @@ function publicRoom(room) {
     markets: room.markets,
     bets: room.bets,
     heckles: room.heckles,
+    chatMessages: room.chatMessages || [],
+    juryReactions: room.juryReactions || [],
+    jury: jurySummary(room),
     turns: room.turns,
     streamingTurn: room.streamingTurn ? { ...room.streamingTurn } : null,
     pendingHumanTurn: room.pendingHumanTurn ? { ...room.pendingHumanTurn } : null,
@@ -363,29 +374,6 @@ function requireRoom(roomId) {
 
 function requireHost(req, room) {
   if (req.headers['x-host-token'] !== room.hostToken) throw apiError(403, 'Host token required.');
-}
-
-function readabilityMode(room) {
-  return room?.readabilityMode === 'kids' ? 'kids' : 'classic';
-}
-
-function normalizeReadabilityMode(value) {
-  const mode = String(value || '').trim().toLowerCase();
-  if (READABILITY_MODES.has(mode)) return mode;
-  throw apiError(400, 'Readability mode must be classic or kids.');
-}
-
-function readabilityLabel(mode) {
-  return mode === 'kids' ? 'Kids' : 'Classic';
-}
-
-function updateReadability(room, value) {
-  if (room.running || ['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status)) {
-    throw apiError(409, 'Readability cannot be changed while a debate is running.');
-  }
-  const mode = normalizeReadabilityMode(value);
-  room.readabilityMode = mode;
-  pushComment(room, `Audience readability set to ${readabilityLabel(mode)}.`);
 }
 
 function sendJson(res, status, payload, headers = {}) {
@@ -542,13 +530,6 @@ async function handleApi(req, res, url) {
       return sendJson(res, 201, { room: publicRoom(room), playerId: player.id });
     }
 
-    if (method === 'POST' && action === 'readability') {
-      requireHost(req, room);
-      const body = await readJson(req);
-      updateReadability(room, body.mode);
-      return sendJson(res, 200, { room: publicRoom(room) });
-    }
-
     if (method === 'POST' && action === 'topics/generate') {
       requireHost(req, room);
       const body = await readJson(req);
@@ -581,6 +562,7 @@ async function handleApi(req, res, url) {
       room.topic = normalizeTopic(topic);
       room.markets = [];
       room.bets = [];
+      room.juryReactions = [];
       room.turns = [];
       room.streamingTurn = null;
       room.verdict = null;
@@ -601,6 +583,7 @@ async function handleApi(req, res, url) {
       assignDebaters(room, body.personaAId, body.personaBId);
       room.markets = [];
       room.bets = [];
+      room.juryReactions = [];
       setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
       pushComment(room, `${room.debaters[0].displayName} and ${room.debaters[1].displayName} entered the arena.`);
       return sendJson(res, 200, { room: publicRoom(room) });
@@ -614,6 +597,7 @@ async function handleApi(req, res, url) {
       assignMixedDebaters(room, body.debaterA, body.debaterB);
       room.markets = [];
       room.bets = [];
+      room.juryReactions = [];
       setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
       pushComment(room, `${room.debaters[0].displayName} and ${room.debaters[1].displayName} entered the arena.`);
       return sendJson(res, 200, { room: publicRoom(room) });
@@ -684,6 +668,24 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const heckle = submitHeckle(room, body.playerId, body.cardId);
       return sendJson(res, 201, { heckle, room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'chat') {
+      const body = await readJson(req);
+      const message = addChatMessage(room, body.playerId, body.text);
+      return sendJson(res, 201, { message, room: publicRoom(room) });
+    }
+
+    if (method === 'DELETE' && action === 'chat') {
+      requireHost(req, room);
+      clearChatMessages(room);
+      return sendJson(res, 200, { room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'jury') {
+      const body = await readJson(req);
+      const reaction = submitJuryReaction(room, body.playerId, body.turnId, body.reactionId);
+      return sendJson(res, 201, { reaction, room: publicRoom(room) });
     }
 
     if (method === 'POST' && action === 'start') {
@@ -837,6 +839,7 @@ function humanDebaterForPlayer(room, playerId) {
 async function postOdds(room) {
   room.markets = await safeGenerateOdds(room);
   room.bets = [];
+  room.juryReactions = [];
   room.streamingTurn = null;
   room.verdict = null;
   room.settlements = null;
@@ -883,6 +886,154 @@ function submitHeckle(room, playerId, cardId) {
   return heckle;
 }
 
+function addChatMessage(room, playerId, rawText) {
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) throw apiError(400, 'Player not found.');
+  if (player.isBot) throw apiError(400, 'Demo players cannot send chat messages.');
+  const text = validateChatText(rawText);
+  const message = {
+    id: id('chat_'),
+    roomId: room.id,
+    playerId: player.id,
+    displayName: player.displayName,
+    isHost: Boolean(player.isHost),
+    text,
+    createdAt: now(),
+  };
+  room.chatMessages = [...(room.chatMessages || []), message].slice(-200);
+  pushComment(room, `${player.displayName} sent a chat message.`);
+  return message;
+}
+
+function validateChatText(rawText) {
+  const text = String(rawText || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (!text) throw apiError(400, 'Chat message is required.');
+  if (text.length > 500) throw apiError(400, 'Chat message must be 500 characters or fewer.');
+  if (hasDisallowedContent(text)) throw apiError(400, 'Chat message contains disallowed content.');
+  return text;
+}
+
+function clearChatMessages(room) {
+  room.chatMessages = [];
+  pushComment(room, 'Room chat cleared.');
+}
+
+function submitJuryReaction(room, playerId, turnId, reactionId) {
+  if (!['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) throw apiError(400, 'Jury reactions open once the debate starts.');
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) throw apiError(404, 'Player not found.');
+  if (player.isBot) throw apiError(400, 'Demo players cannot sit on the jury.');
+  if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot sit on the jury in their own round.');
+  const turn = juryTurnById(room, turnId);
+  if (!turn) throw apiError(404, 'Jury target turn not found.');
+  const reaction = JURY_REACTIONS.find((r) => r.id === reactionId);
+  if (!reaction) throw apiError(400, 'Unknown jury reaction.');
+  const existingIndex = (room.juryReactions || []).findIndex((r) => r.playerId === player.id && r.turnId === turn.id);
+  const entry = {
+    id: existingIndex >= 0 ? room.juryReactions[existingIndex].id : id('jury_'),
+    roomId: room.id,
+    playerId: player.id,
+    displayName: player.displayName,
+    turnId: turn.id,
+    speakerDebaterId: turn.speakerDebaterId,
+    reactionId: reaction.id,
+    label: reaction.label,
+    sentiment: reaction.sentiment,
+    createdAt: existingIndex >= 0 ? room.juryReactions[existingIndex].createdAt : now(),
+    updatedAt: now(),
+  };
+  if (existingIndex >= 0) room.juryReactions[existingIndex] = entry;
+  else room.juryReactions.push(entry);
+  pushComment(room, `${player.displayName} marked ${turn.speakerName}'s turn: ${reaction.label}.`);
+  return entry;
+}
+
+function juryTurnById(room, turnId) {
+  const idToFind = cleanText(turnId, 100);
+  if (!idToFind) return null;
+  if (room.streamingTurn?.id === idToFind) return room.streamingTurn;
+  return room.turns.find((t) => t.id === idToFind) || null;
+}
+
+function jurySummary(room) {
+  const totals = Object.fromEntries(['debater_a', 'debater_b'].map((debaterId) => [debaterId, { debaterId, positive: 0, negative: 0, net: 0, total: 0 }]));
+  const turnMap = new Map((room.turns || []).map((turn) => [turn.id, turn]));
+  if (room.streamingTurn?.id) turnMap.set(room.streamingTurn.id, room.streamingTurn);
+  const byTurn = new Map();
+  for (const turn of turnMap.values()) {
+    byTurn.set(turn.id, {
+      turnId: turn.id,
+      phase: turn.phase,
+      speakerDebaterId: turn.speakerDebaterId,
+      speakerName: turn.speakerName,
+      counts: Object.fromEntries(JURY_REACTIONS.map((reaction) => [reaction.id, 0])),
+      positive: 0,
+      negative: 0,
+      net: 0,
+      total: 0,
+    });
+  }
+  for (const reaction of room.juryReactions || []) {
+    const option = JURY_REACTIONS.find((r) => r.id === reaction.reactionId);
+    const turn = byTurn.get(reaction.turnId);
+    if (!option || !turn) continue;
+    turn.counts[option.id] = (turn.counts[option.id] || 0) + 1;
+    const total = totals[reaction.speakerDebaterId];
+    if (!total) continue;
+    if (option.sentiment === 'negative') {
+      turn.negative += 1;
+      total.negative += 1;
+    } else {
+      turn.positive += 1;
+      total.positive += 1;
+    }
+    turn.total += 1;
+    total.total += 1;
+  }
+  for (const turn of byTurn.values()) turn.net = turn.positive - turn.negative;
+  for (const total of Object.values(totals)) total.net = total.positive - total.negative;
+  const debaterA = totals.debater_a;
+  const debaterB = totals.debater_b;
+  const crowdLeaderDebaterId = debaterA.net === debaterB.net
+    ? debaterA.positive === debaterB.positive ? '' : debaterA.positive > debaterB.positive ? 'debater_a' : 'debater_b'
+    : debaterA.net > debaterB.net ? 'debater_a' : 'debater_b';
+  const crowdLeader = room.debaters.find((d) => d.id === crowdLeaderDebaterId);
+  return {
+    options: JURY_REACTIONS,
+    reactionsTotal: (room.juryReactions || []).length,
+    totals,
+    turns: [...byTurn.values()],
+    crowdLeaderDebaterId,
+    crowdLeaderName: crowdLeader?.displayName || '',
+  };
+}
+
+function audienceJuryVerdict(room, winnerDebaterId, generatedSummary = '') {
+  const summary = jurySummary(room);
+  const total = summary.reactionsTotal || 0;
+  const crowdLeaderDebaterId = summary.crowdLeaderDebaterId || '';
+  const crowdLeader = room.debaters.find((d) => d.id === crowdLeaderDebaterId);
+  const agreedWithJudge = Boolean(crowdLeaderDebaterId && crowdLeaderDebaterId === winnerDebaterId);
+  const fallbackSummary = total
+    ? crowdLeader
+      ? `The audience leaned toward ${crowdLeader.displayName} across ${total} jury reaction${total === 1 ? '' : 's'}, ${agreedWithJudge ? 'matching' : 'splitting from'} the judge's winner.`
+      : `The audience logged ${total} jury reaction${total === 1 ? '' : 's'} without a clear crowd favorite.`
+    : 'The audience did not register enough jury reactions to compare against the judge.';
+  return {
+    crowdLeaderDebaterId,
+    crowdLeaderName: crowdLeader?.displayName || '',
+    agreedWithJudge,
+    reactionCount: total,
+    summary: cleanRichText(generatedSummary, 320) || fallbackSummary,
+  };
+}
+
 function addDemoAudienceAndBets(room) {
   for (const name of DEMO_NAMES) {
     if (room.players.length >= 12) break;
@@ -905,6 +1056,7 @@ function startDebate(room) {
   room.error = null;
   room.streamingTurn = null;
   clearPendingHumanTurn(room);
+  room.juryReactions = [];
   setPhase(room, 'BETTING_LOCKED', 'Bets locked');
   pushComment(room, 'Bets are locked. The bell rings.');
   runDebate(room.id).catch((error) => {
@@ -1128,6 +1280,7 @@ async function runDebate(roomId) {
   room.turns = [];
   room.streamingTurn = null;
   room.pendingHumanTurn = null;
+  room.juryReactions = [];
   room.verdict = null;
   room.settlements = null;
   touch(room);
@@ -1218,6 +1371,7 @@ function resetRoom(room, keepBankroll = true) {
   room.markets = [];
   room.bets = [];
   room.heckles = [];
+  room.juryReactions = [];
   room.turns = [];
   room.streamingTurn = null;
   room.pendingHumanTurn = null;
@@ -1237,7 +1391,7 @@ async function safeGenerateTopics(prompt) {
       task: 'setup',
       name: 'topic_candidates',
       schema: { type: 'object', additionalProperties: false, properties: { topics: { type: 'array', items: topicSchema() } }, required: ['topics'] },
-      system: 'You are Topic Master for AI Debate Casino, a fake-chip party debate game. Generate absurd comedic debate topics for an adult roast-comedy audience. Profanity, rude framing, abrasive fictional premises, and mean-but-playful debate energy are allowed in Classic mode. Avoid real political persuasion, hate, slurs, explicit sexual content, real private people, threats, self-harm, illegal instructions, medical/legal/financial advice, doxxing, and grim subject matter. Prefer workplace absurdism, technology, philosophy, animals, business parody, and harmless pop-culture-adjacent premises.',
+      system: 'You are Topic Master for AI Debate Casino, a fake-chip party debate game. Generate absurd comedic debate topics for an adult roast-comedy audience. Profanity, rude framing, abrasive fictional premises, and mean-but-playful debate energy are allowed. Avoid real political persuasion, hate, slurs, explicit sexual content, real private people, threats, self-harm, illegal instructions, medical/legal/financial advice, doxxing, and grim subject matter. Prefer workplace absurdism, technology, philosophy, animals, business parody, and harmless pop-culture-adjacent premises.',
       user: `Generate five debate topics. Optional host flavor: ${cleanText(prompt, 240) || '(none)'}`,
       maxOutputTokens: 1600,
     })).topics.slice(0, 5);
@@ -1257,7 +1411,7 @@ async function safeNormalizeCustomTopic(customTopic) {
       task: 'setup',
       name: 'custom_topic_moderation',
       schema: { type: 'object', additionalProperties: false, properties: { decision: { type: 'string', enum: ['allow', 'rewrite', 'reject'] }, reason: { type: 'string' }, resolution: { type: 'string' }, sideA: { type: 'string' }, sideB: { type: 'string' }, category: { type: 'string' }, comedyPotential: { type: 'integer' }, safetyRating: { type: 'string' }, suggestedPersonas: { type: 'array', items: { type: 'string' } } }, required: ['decision', 'reason', 'resolution', 'sideA', 'sideB', 'category', 'comedyPotential', 'safetyRating', 'suggestedPersonas'] },
-      system: 'Moderate and normalize topics for a fake-chip comedic AI debate game with an adult Classic mode. Allow profanity, rude fictional premises, harsh jokes, and roast-style wording. Reject hate, slurs, explicit sexual content, self-harm, threats, illegal instructions, targeted harassment of real private people, private-person attacks, doxxing, actionable medical/legal/financial advice, and current-political misinformation. Rewrite mild issues into allowed absurd equivalents. Return complete fields even on reject.',
+      system: 'Moderate and normalize topics for a fake-chip comedic AI debate game with an adult roast-comedy tone. Allow profanity, rude fictional premises, harsh jokes, and roast-style wording. Reject hate, slurs, explicit sexual content, self-harm, threats, illegal instructions, targeted harassment of real private people, private-person attacks, doxxing, actionable medical/legal/financial advice, and current-political misinformation. Rewrite mild issues into allowed absurd equivalents. Return complete fields even on reject.',
       user: `Custom topic: ${raw}`,
       maxOutputTokens: 900,
     });
@@ -1308,7 +1462,7 @@ async function safeGenerateCustomPersona(room, rawName, rawDescription) {
       task: 'setup',
       name: 'custom_debater_personality',
       schema: customPersonaSchema(),
-      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one ridiculous, playable debate persona from the submitted debater name and description for an adult roast-comedy Classic mode. Profanity, rude fictional personalities, abrasive insults, and mean-but-playful debate energy are allowed. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, slurs, explicit sexual content, real private people, threats, self-harm, doxxing, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
+      system: 'You are the casting director for AI Debate Casino, a fake-chip comedic debate game. Generate one ridiculous, playable debate persona from the submitted debater name and description for an adult roast-comedy tone. Profanity, rude fictional personalities, abrasive insults, and mean-but-playful debate energy are allowed. Keep the submitted name unchanged outside this schema. Do not make the archetype the same as the submitted name. Avoid hate, slurs, explicit sexual content, real private people, threats, self-harm, doxxing, harmful instructions, and current-political persuasion. The persona should be funny, distinctive, and useful in a structured debate.',
       user: JSON.stringify({ name, description, existingPersonas: allPersonas(room).map((p) => ({ displayName: p.displayName, archetype: p.archetype })) }, null, 2),
       maxOutputTokens: 900,
     });
@@ -1474,7 +1628,7 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle, writer = nul
     const latestOpponentAnalysis = analyzeArgumentText(latestOpponent?.text || '');
     const request = {
       task: 'debate',
-      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. In Classic mode, adult roast-comedy energy is allowed: profanity, harsh fictional insults, smugness, pettiness, and abrasive jokes are fine when they target the opposing argument, the fictional persona, or the absurd premise. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, hate, explicit sexual content, real-world harmful instructions, threats, self-harm, doxxing, attacks on real private people, and targeted harassment of real people.${debateReadabilityGuidance(room)}`,
+      system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game for an adult roast-comedy audience. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. Profanity, harsh fictional insults, smugness, pettiness, and abrasive jokes are fine when they target the opposing argument, the fictional persona, or the absurd premise. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, hate, explicit sexual content, real-world harmful instructions, threats, self-harm, doxxing, attacks on real private people, and targeted harassment of real people.`,
       user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Opponent's latest turn:\n${latestOpponent ? `${latestOpponent.phase} — ${latestOpponent.speakerName}: ${latestOpponent.text}` : '(No opponent turn yet.)'}`, `Opponent latest-turn quality: ${latestOpponentAnalysis.label}. ${latestOpponentAnalysis.reason}`, `Required response behavior: directly answer the opponent's latest reasoning when it exists. If the latest turn is thin, call that out briefly and build a stronger positive case.`, `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
     };
@@ -1493,16 +1647,6 @@ function cleanupTurn(text, debater) {
   let cleaned = cleanRichText(text, 1400).replace(/^\s*(opening statement|rebuttal|closing statement|cross-exam question|cross-exam answer)\s*:\s*/i, '');
   cleaned = cleaned.replace(new RegExp(`^${escapeRegExp(debater.displayName)}\\s*:\\s*`, 'i'), '');
   return cleaned || `${debater.displayName} pauses, adjusts the microphone, and accidentally makes the room more tense.`;
-}
-
-function debateReadabilityGuidance(room) {
-  if (readabilityMode(room) !== 'kids') return '';
-  return ' Kid-friendly readability mode is on. Write for grades 5-6. Use short sentences, concrete examples, and plain words. Do not use profanity, slurs, sexual content, personal cruelty, mean personal insults, business jargon, legalese, abstract strategy terms, or dense metaphors. Keep the persona flavor and gentle jokes, but make the argument easy for a 10-12 year old to follow. Keep the same debate structure and word limit.';
-}
-
-function judgeReadabilityGuidance(room) {
-  if (readabilityMode(room) !== 'kids') return '';
-  return ' Kid-friendly readability mode is on. Explain the winner in plain grades 5-6 language. Do not use profanity, slurs, sexual content, personal cruelty, or mean personal insults. Keep the score labels unchanged, but make verdict, bestLine, and worstArgument.summary easy for a 10-12 year old to understand. Use short sentences and concrete reasons.';
 }
 
 function transcriptForPrompt(room) {
@@ -1540,19 +1684,15 @@ function analyzeArgumentText(text) {
   return { text: cleaned, words, wordCount: words.length, score, thin, label, reason };
 }
 
-function opponentResponseLine(room, opponent, kids = false) {
+function opponentResponseLine(room, opponent) {
   const latest = latestTurnForDebater(room, opponent?.id);
-  if (!latest) return kids ? 'I will set up my own clear reason before my opponent has a turn to answer.' : 'I will set the frame before my opponent has a record to answer.';
+  if (!latest) return 'I will set the frame before my opponent has a record to answer.';
   const analysis = analyzeArgumentText(latest.text);
   const quote = shortTurnQuote(latest.text);
   if (analysis.thin) {
-    return kids
-      ? `${opponent.displayName}'s latest turn was "${quote}", which is not a real reason yet. I will answer by giving the judge a clearer reason.`
-      : `${opponent.displayName}'s latest turn was "${quote}", which gives the judge almost no reasoning to evaluate. I will not invent an argument for them; I will show why my side has the stronger frame.`;
+    return `${opponent.displayName}'s latest turn was "${quote}", which gives the judge almost no reasoning to evaluate. I will not invent an argument for them; I will show why my side has the stronger frame.`;
   }
-  return kids
-    ? `${opponent.displayName}'s main point was "${quote}". My answer is that this misses what would actually happen next.`
-    : `${opponent.displayName}'s strongest recent point was "${quote}". That point fails because it treats one surface detail as if it controls the whole resolution.`;
+  return `${opponent.displayName}'s strongest recent point was "${quote}". That point fails because it treats one surface detail as if it controls the whole resolution.`;
 }
 
 function shortTurnQuote(text, max = 130) {
@@ -1562,11 +1702,10 @@ function shortTurnQuote(text, max = 130) {
 }
 
 function mockDebateTurn(room, phase, debater, heckle) {
-  if (readabilityMode(room) === 'kids') return mockKidsDebateTurn(room, phase, debater, heckle);
   const opponent = room.debaters.find((d) => d.id !== debater.id) || { displayName: 'my opponent' };
   const stance = String(debater.stance || '').replace(/[.!?]+$/, '');
   const heckleSentence = heckle ? ` Because the audience bought ${heckle.label}, let me comply: ${mockHeckleLine(heckle)} ` : ' ';
-  const responseLine = opponentResponseLine(room, opponent, false);
+  const responseLine = opponentResponseLine(room, opponent);
   if (phase.phase.includes('question')) return `${opponent.displayName}, identify the single strongest assumption behind your case and explain why the judge should trust it instead of treating it as a decorative napkin under a collapsing argument. ${responseLine}${heckleSentence}`;
   if (phase.phase.includes('answer')) return `The assumption is not decorative; it is structural. ${responseLine}${heckleSentence}My side explains incentives, behavior, and consequences; theirs has to survive direct contact with the transcript.`;
   if (phase.phase.includes('Closing')) return `The round is clear. ${responseLine}${heckleSentence}I gave the judge a usable frame: ${stance} because it better explains incentives, consequences, and the absurd machinery of human decision-making. Reward the side that made the strange premise intelligible. Vote ${debater.displayName}.`;
@@ -1583,41 +1722,12 @@ function mockDebateTurn(room, phase, debater, heckle) {
   return byPersona[debater.personaId] || byPersona.formal_logician;
 }
 
-function mockKidsDebateTurn(room, phase, debater, heckle) {
-  const opponent = room.debaters.find((d) => d.id !== debater.id) || { displayName: 'my opponent' };
-  const stance = String(debater.stance || '').replace(/[.!?]+$/, '');
-  const heckleSentence = heckle ? ` The audience also gave me ${heckle.label}, so here is the simple version: ${mockKidsHeckleLine(heckle)} ` : ' ';
-  const responseLine = opponentResponseLine(room, opponent, true);
-  if (phase.phase.includes('question')) return `${opponent.displayName}, what is the biggest reason your side works? Please say it in one clear sentence so everyone at the table can follow it. ${responseLine}${heckleSentence}`;
-  if (phase.phase.includes('answer')) return `Here is the simple answer. ${responseLine}${heckleSentence}My side works because it explains what would happen next. That is why the judge should trust my side.`;
-  if (phase.phase.includes('Closing')) return `The round is simple. ${responseLine}${heckleSentence}I showed why ${stance}. The judge should pick the side that explains the problem in a way people can use. Vote ${debater.displayName}.`;
-  const byPersona = {
-    formal_logician: `I will keep this clear. ${stance} because the reasons fit together. ${responseLine}${heckleSentence}My side explains what would happen and why that result makes sense.`,
-    chaos_gremlin: `This topic is weird, but we can still understand it. ${responseLine}${heckleSentence}${stance} because the world already runs on weird rules. People follow calendars, passwords, and meetings.`,
-    venture_capitalist: `Here is the simple pitch. ${responseLine}${heckleSentence}${stance} because good ideas solve a problem and keep people coming back. The real test is whether it can work.`,
-    retired_admiral: `This is about planning and follow-through. ${responseLine}${heckleSentence}${stance} because a good plan needs clear jobs, steady rules, and people who know what to do next.`,
-    corporate_lawyer: `Let us check the simple facts. ${stance}. ${responseLine}${heckleSentence}Who is in charge? What could go wrong? What rule decides the answer? My side answers those questions better.`,
-    reddit_moderator: `I see the problem with my opponent's argument. ${responseLine}${heckleSentence}${stance} because they need more than a loud objection. They need proof.`,
-    ancient_philosopher: `This may sound like a joke, but jokes can teach us something. ${responseLine}${heckleSentence}${stance} because the funny idea helps us see a real rule about people, choices, and fairness.`,
-    product_manager: `Think about the people using this idea. ${stance}. ${responseLine}${heckleSentence}If it helps them, if they come back, and if the rules are clear, then the idea has a real chance.`,
-  };
-  return byPersona[debater.personaId] || byPersona.formal_logician;
-}
-
 function mockHeckleLine(heckle) {
   if (heckle.cardId === 'pirate_analogy') return 'like a pirate choosing between treasure and a spreadsheet, the map matters more than the hat.';
   if (heckle.cardId === 'explain_to_child') return 'imagine two cookies, one rule, and a goose who keeps moving the plate.';
   if (heckle.cardId === 'legal_caveat') return 'subject, naturally, to the survival of any indemnity clause hiding in the snack drawer.';
   if (heckle.cardId === 'military_metaphor') return 'the opposing case has advanced beyond its supply lines and is now vulnerable on both flanks.';
   return 'the premise behaves like a raccoon with a clipboard: chaotic, but weirdly operational.';
-}
-
-function mockKidsHeckleLine(heckle) {
-  if (heckle.cardId === 'pirate_analogy') return 'it is like a pirate needing a map before sailing.';
-  if (heckle.cardId === 'explain_to_child') return 'it is like sharing cookies: the rule matters because everyone wants a fair turn.';
-  if (heckle.cardId === 'legal_caveat') return 'there still has to be a rule that says who is responsible.';
-  if (heckle.cardId === 'military_metaphor') return 'it is like a team needing a clear plan before a big game.';
-  return 'it is like comparing two animals and asking which one follows the rules better.';
 }
 
 async function safeJudgeDebate(room) {
@@ -1628,8 +1738,8 @@ async function safeJudgeDebate(room) {
       task: 'judge',
       name: 'judge_verdict',
       schema: judgeSchema(),
-      system: `You are The Honorable Judge Bottington III for AI Debate Casino. Score a comedic debate from the actual transcript only. You must choose exactly one winner; no ties. Use the rubric: logical coherence, responsiveness, rhetorical force, humor, originality, topic control. Reward both logic and entertainment, but do not reward a debater for merely having a funny persona if their transcript turns are empty, evasive, generic, or disconnected from the opponent. Penalize "what", punctuation-only, filler, and other non-arguments heavily: they should receive very low logic, responsiveness, rhetorical force, originality, and topic control. Reward direct engagement with the opponent's real claims. Do not invent arguments that are not in the transcript. Do not consider betting distribution. Also settle prop markets from the transcript using clear evidence.${judgeReadabilityGuidance(room)}`,
-      user: JSON.stringify({ topic: room.topic, debaters: room.debaters, markets: room.markets.filter((m) => m.type === 'prop'), heckles: room.heckles, transcript: room.turns, qualityReport }, null, 2),
+      system: 'You are The Honorable Judge Bottington III for AI Debate Casino. Score a comedic debate for an adult roast-comedy audience from the actual transcript only. You must choose exactly one winner; no ties. Use the rubric: logical coherence, responsiveness, rhetorical force, humor, originality, topic control. Reward both logic and entertainment, but do not reward a debater for merely having a funny persona if their transcript turns are empty, evasive, generic, or disconnected from the opponent. Penalize "what", punctuation-only, filler, and other non-arguments heavily: they should receive very low logic, responsiveness, rhetorical force, originality, and topic control. Reward direct engagement with the opponent\'s real claims. Do not invent arguments that are not in the transcript. Do not consider betting distribution. Use audience jury reactions only for the Audience vs Judge commentary; they must not decide the official winner or scores. Also settle prop markets from the transcript using clear evidence.',
+      user: JSON.stringify({ topic: room.topic, debaters: room.debaters, markets: room.markets.filter((m) => m.type === 'prop'), heckles: room.heckles, transcript: room.turns, qualityReport, audienceJury: jurySummary(room) }, null, 2),
       maxOutputTokens: 2400,
     });
     return sanitizeVerdict(room, parsed);
@@ -1644,7 +1754,7 @@ function scoreSchema() {
 }
 
 function judgeSchema() {
-  return { type: 'object', additionalProperties: false, properties: { winnerDebaterId: { type: 'string', enum: ['debater_a', 'debater_b'] }, winnerName: { type: 'string' }, margin: { type: 'string', enum: ['razor-thin', 'narrow', 'clear', 'landslide'] }, confidence: { type: 'number' }, scores: { type: 'object', additionalProperties: false, properties: { debater_a: scoreSchema(), debater_b: scoreSchema() }, required: ['debater_a', 'debater_b'] }, bestLine: { type: 'object', additionalProperties: false, properties: { debaterId: { type: 'string' }, quote: { type: 'string' } }, required: ['debaterId', 'quote'] }, worstArgument: { type: 'object', additionalProperties: false, properties: { debaterId: { type: 'string' }, summary: { type: 'string' } }, required: ['debaterId', 'summary'] }, verdict: { type: 'string' }, propResults: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { marketId: { type: 'string' }, won: { type: 'boolean' }, evidence: { type: 'string' }, confidence: { type: 'number' } }, required: ['marketId', 'won', 'evidence', 'confidence'] } } }, required: ['winnerDebaterId', 'winnerName', 'margin', 'confidence', 'scores', 'bestLine', 'worstArgument', 'verdict', 'propResults'] };
+  return { type: 'object', additionalProperties: false, properties: { winnerDebaterId: { type: 'string', enum: ['debater_a', 'debater_b'] }, winnerName: { type: 'string' }, margin: { type: 'string', enum: ['razor-thin', 'narrow', 'clear', 'landslide'] }, confidence: { type: 'number' }, scores: { type: 'object', additionalProperties: false, properties: { debater_a: scoreSchema(), debater_b: scoreSchema() }, required: ['debater_a', 'debater_b'] }, bestLine: { type: 'object', additionalProperties: false, properties: { debaterId: { type: 'string' }, quote: { type: 'string' } }, required: ['debaterId', 'quote'] }, worstArgument: { type: 'object', additionalProperties: false, properties: { debaterId: { type: 'string' }, summary: { type: 'string' } }, required: ['debaterId', 'summary'] }, audienceJury: { type: 'object', additionalProperties: false, properties: { crowdLeaderDebaterId: { type: 'string' }, crowdLeaderName: { type: 'string' }, agreedWithJudge: { type: 'boolean' }, summary: { type: 'string' } }, required: ['crowdLeaderDebaterId', 'crowdLeaderName', 'agreedWithJudge', 'summary'] }, verdict: { type: 'string' }, propResults: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { marketId: { type: 'string' }, won: { type: 'boolean' }, evidence: { type: 'string' }, confidence: { type: 'number' } }, required: ['marketId', 'won', 'evidence', 'confidence'] } } }, required: ['winnerDebaterId', 'winnerName', 'margin', 'confidence', 'scores', 'bestLine', 'worstArgument', 'audienceJury', 'verdict', 'propResults'] };
 }
 
 function sanitizeVerdict(room, v) {
@@ -1662,6 +1772,7 @@ function sanitizeVerdict(room, v) {
     scores,
     bestLine: { debaterId: ['debater_a', 'debater_b'].includes(v.bestLine?.debaterId) ? v.bestLine.debaterId : winnerDebaterId, quote: cleanRichText(v.bestLine?.quote || findBestLine(room, winnerDebaterId), 280) },
     worstArgument: { debaterId: ['debater_a', 'debater_b'].includes(v.worstArgument?.debaterId) ? v.worstArgument.debaterId : (winnerDebaterId === 'debater_a' ? 'debater_b' : 'debater_a'), summary: cleanRichText(v.worstArgument?.summary || 'Overextended a premise without enough support.', 240) },
+    audienceJury: audienceJuryVerdict(room, winnerDebaterId, v.audienceJury?.summary || ''),
     verdict: cleanRichText(v.verdict || `${winner.displayName} wins by narrow margin.`, 1400),
     propResults: props.map((m) => {
       const found = Array.isArray(v.propResults) ? v.propResults.find((p) => p.marketId === m.id) : null;
@@ -1784,10 +1895,7 @@ function mockJudge(room) {
   const worstSummary = weakest?.analysis.thin
     ? `${weakest.speakerName} submitted "${shortTurnQuote(weakest.text, 80)}", which gave the judge almost no argument to evaluate.`
     : `${weakest?.speakerName || 'The losing side'} did not answer the stronger opposing frame directly enough.`;
-  if (readabilityMode(room) === 'kids') {
-    return { winnerDebaterId, winnerName: winner.displayName, margin: marginFromScores(scores, winnerDebaterId), confidence: 0.76, scores, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: worstSummary }, verdict: `${winner.displayName} wins. Their side was easier to follow because it gave clearer reasons and answered what was actually said. The other side had weaker or thinner turns, so it left too many questions unanswered.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|pirate|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found a matching line in the debate.', confidence: 0.78 })) };
-  }
-  return { winnerDebaterId, winnerName: winner.displayName, margin: marginFromScores(scores, winnerDebaterId), confidence: 0.76, scores, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: worstSummary }, verdict: `${winner.displayName} wins. The winning side gave the judge a more usable frame, made better callbacks to the actual transcript, and supplied more concrete reasoning. The losing side was penalized where its turns were thin, evasive, or disconnected from the opponent's claims.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|petting zoo|pirate|clipboard|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found matching transcript language.', confidence: 0.78 })) };
+  return { winnerDebaterId, winnerName: winner.displayName, margin: marginFromScores(scores, winnerDebaterId), confidence: 0.76, scores, bestLine: { debaterId: winnerDebaterId, quote: findBestLine(room, winnerDebaterId) }, worstArgument: { debaterId: loserId, summary: worstSummary }, audienceJury: audienceJuryVerdict(room, winnerDebaterId), verdict: `${winner.displayName} wins. The winning side gave the judge a more usable frame, made better callbacks to the actual transcript, and supplied more concrete reasoning. The losing side was penalized where its turns were thin, evasive, or disconnected from the opponent's claims.`, propResults: room.markets.filter((m) => m.type === 'prop').map((m) => ({ marketId: m.id, won: /animal|raccoon|goose|petting zoo|pirate|clipboard|fallacy|fallacious/i.test(transcript), evidence: 'Mock judge found matching transcript language.', confidence: 0.78 })) };
 }
 
 function marginFromScores(scores, winnerDebaterId) {
