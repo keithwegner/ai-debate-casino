@@ -381,27 +381,27 @@ function nextActionState(room, me, isHost) {
 
   if (!hasTopic) {
     return isHost
-      ? { kicker: 'Host next', title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom resolution.', tone: 'setup', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      ? { kicker: 'Host next', title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom resolution.', tone: 'setup' }
       : { kicker: 'Player next', title: room.topicVote?.open ? 'Suggest or vote on a topic' : 'Waiting for the topic', detail: room.topicVote?.open ? 'Add a resolution or back the one you want debated.' : 'The host is setting up the round.', tone: 'setup' };
   }
   if (!hasDebaters) {
     return isHost
-      ? { kicker: 'Host next', title: 'Assign debaters', detail: 'Pick two AI debaters or one lobby player against an AI debater.', tone: 'setup', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      ? { kicker: 'Host next', title: 'Assign debaters', detail: 'Pick two AI debaters or one lobby player against an AI debater.', tone: 'setup' }
       : { kicker: 'Player next', title: 'Debaters are being assigned', detail: 'The resolution is set. The matchup is next.', tone: 'setup' };
   }
   if (!hasMarkets) {
     return isHost
-      ? { kicker: 'Host next', title: 'Post odds', detail: 'Publish markets so players can place fake-chip bets.', tone: 'betting', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      ? { kicker: 'Host next', title: 'Post odds', detail: 'Publish markets so players can place fake-chip bets.', tone: 'betting' }
       : { kicker: 'Player next', title: 'Odds are coming', detail: 'Review the matchup while the host prepares betting.', tone: 'betting' };
   }
   if (status === 'BETTING_OPEN') {
     return isHost
-      ? { kicker: 'Host next', title: 'Betting is open', detail: 'Players can bet now. Start the debate when the table is ready.', tone: 'betting', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      ? { kicker: 'Host next', title: 'Betting is open', detail: 'Players can bet now. Start the debate when the table is ready.', tone: 'betting' }
       : { kicker: 'Player next', title: isHumanDebater ? 'Betting is open to the audience' : 'Betting is open', detail: isHumanDebater ? 'You are debating this round, so betting is blocked for you.' : 'Pick a market and place your fake-chip bet before the debate starts.', tone: 'betting', button: { label: 'Go to bets', attrs: 'data-scroll-target="#bets"' } };
   }
   if (status === 'BETTING_LOCKED') {
     return isHost
-      ? { kicker: 'Host next', title: 'Start the debate', detail: 'Bets are locked. Send the debaters to the stage.', tone: 'live', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      ? { kicker: 'Host next', title: 'Start the debate', detail: 'Bets are locked. Send the debaters to the stage.', tone: 'live' }
       : { kicker: 'Player next', title: 'Debate is queued', detail: 'Bets are locked. The live turn will appear here next.', tone: 'live' };
   }
   if (status === 'DEBATE') {
@@ -885,9 +885,13 @@ function hostControlsHtml(room) {
   const defaultB = debaterSelectionValue(room.debaters?.[1]) || `ai:${personasForRoom(room)[1]?.id || ''}`;
   return `
     <details id="host-console" class="host-drawer" data-open="${state.ui.hostConsoleOpen ? 'true' : 'false'}" ${state.ui.hostConsoleOpen ? 'open' : ''}>
-      <summary><span>Host console</span><small>Setup & admin</small></summary>
+      <summary><span>Host setup</span><small>Admin sheet</small></summary>
       <section class="host-controls pit-console">
-        <div class="section-head"><div><div class="kicker">Host controls</div><h2>Host console</h2></div>${hostActionButtonsHtml(room)}</div>
+        <div class="host-sheet-head">
+          <div><div class="kicker">Admin sheet</div><h2>Host setup</h2><p>Configure the round without crowding the live table.</p></div>
+          <button type="button" class="host-sheet-close" data-close-host>Close</button>
+        </div>
+        <div class="section-head"><div><div class="kicker">Round controls</div><h2>Setup actions</h2></div>${hostActionButtonsHtml(room)}</div>
         ${setupProgressHtml(room)}
         <div class="host-grid">
           ${topicControlsHtml(room, canEdit)}
@@ -1118,6 +1122,14 @@ function bindRoom() {
       state.ui.hostConsoleOpen = nextOpen;
       state.ui.chatOpen = false;
       if (!state.ui.hostConsoleOpen) state.ui.hostConsoleScrollTop = 0;
+      render();
+    });
+  }
+  for (const el of document.querySelectorAll('[data-close-host]')) {
+    el.addEventListener('click', () => {
+      const drawer = document.getElementById('host-console');
+      if (drawer) drawer.open = false;
+      resetHostConsoleState();
       render();
     });
   }
