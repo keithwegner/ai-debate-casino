@@ -321,7 +321,7 @@ function roomHtml(room) {
           ${transcriptHtml(room)}
           ${verdictHtml(room)}
         </section>
-        <aside id="bets" class="sportsbook panel bets-section" aria-label="Bets and heckles">
+        <aside id="bets" class="sportsbook panel bets-section ${betsSectionClass(room)}" aria-label="Bets and heckles">
           ${sportsbookHtml(room, me)}
           ${hecklesHtml(room, me)}
         </aside>
@@ -357,6 +357,14 @@ function topBarHtml(room, me, isHost) {
       <div class="topbar-cell player-cell"><div class="kicker">You</div><div class="player-status"><span class="player-name">${h(me?.displayName || 'Observer')}</span><strong>${chips(me?.bankroll || 0)}</strong></div></div>
       <div class="top-actions">${isHost ? '<button type="button" class="host-toggle" data-toggle-host>Host</button>' : ''}<button data-action="copyLink">Copy link</button><button data-action="leaveRoom">Leave</button></div>
     </header>`;
+}
+
+function betsSectionClass(room) {
+  const hasMarkets = Boolean(room.markets?.length);
+  return [
+    hasMarkets ? 'has-markets' : 'bets-pending',
+    room.status === 'BETTING_OPEN' ? 'betting-open' : 'betting-closed',
+  ].join(' ');
 }
 
 function nextActionBarHtml(room, me, isHost) {
@@ -840,6 +848,7 @@ function sportsbookHtml(room, me) {
   const myBets = room.bets.filter((b) => b.userId === me?.id);
   const humanDebater = humanDebaterForCurrentPlayer(room, me);
   const canBet = room.status === 'BETTING_OPEN' && !humanDebater;
+  const unavailable = betUnavailableReason(room, humanDebater);
   if (!room.markets?.length) {
     const isHost = Boolean(state.session?.hostToken);
     return `
@@ -856,11 +865,19 @@ function sportsbookHtml(room, me) {
     <div class="kicker">Bets</div>
     <h3>Betting window</h3>
     <div class="bet-status ${room.status === 'BETTING_OPEN' ? 'open' : 'closed'}">${room.status === 'BETTING_OPEN' ? 'Betting open' : 'Betting locked / closed'}</div>
-    ${humanDebater ? `<p class="bet-blocked">You are debating as ${h(humanDebater.sideLabel)}. Human debaters cannot bet in their own round.</p>` : ''}
+    ${unavailable ? `<p class="bet-blocked">${h(unavailable)}</p>` : ''}
     <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />
     <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small>${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Bet</button></article>`).join('')}</div>
     <section class="my-bets"><h4>My bets</h4>${myBets.length ? `<table><tbody>${myBets.map((b) => `<tr><td>${h(b.marketLabel)}</td><td>${chips(b.amount)}</td><td>${h(b.status)}</td><td>${b.net === null ? '' : signedChips(b.net)}</td></tr>`).join('')}</tbody></table>` : '<p class="guided-note">Your active bets will appear here after you place one.</p>'}</section>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
+}
+
+function betUnavailableReason(room, humanDebater) {
+  if (humanDebater) return `You are debating as ${humanDebater.sideLabel}. Human debaters cannot bet in their own round.`;
+  if (room.status === 'BETTING_OPEN') return '';
+  if (room.status === 'BETTING_LOCKED') return 'Betting is locked because the debate is ready to start.';
+  if (['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) return 'Betting is closed for this round.';
+  return 'Betting opens after the host posts odds.';
 }
 
 function humanDebaterForCurrentPlayer(room, me) {

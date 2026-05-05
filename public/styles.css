@@ -2905,6 +2905,33 @@ textarea:focus {
   top: 5.2rem;
 }
 
+.bets-section.bets-pending {
+  background: rgba(255, 255, 255, 0.72) !important;
+  box-shadow: 0 8px 22px rgba(31, 39, 34, 0.06) !important;
+}
+
+.bets-section.bets-pending h3 {
+  margin-bottom: 0.55rem;
+}
+
+.bets-section.bets-pending .guided-empty {
+  padding: 0.68rem;
+}
+
+.bets-section.has-markets {
+  border-color: rgba(47, 111, 167, 0.24) !important;
+}
+
+.bets-section.betting-open {
+  border-color: rgba(13, 141, 98, 0.28) !important;
+  box-shadow: 0 16px 42px rgba(13, 141, 98, 0.1) !important;
+}
+
+.bets-section.betting-open .bet-status.open {
+  display: inline-flex;
+  margin-bottom: 0.7rem;
+}
+
 .market-card {
   border-left: 3px solid var(--crimson) !important;
   border-radius: 9px !important;
@@ -2920,6 +2947,15 @@ textarea:focus {
 .odds {
   color: var(--crimson) !important;
   font-size: 1.08rem !important;
+}
+
+.bets-section.has-markets .market-card button {
+  min-height: 2.7rem !important;
+}
+
+.bets-section.has-markets input#betAmount {
+  min-height: 2.6rem;
+  font-size: 1rem;
 }
 
 .my-bets,
