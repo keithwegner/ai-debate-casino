@@ -22,6 +22,9 @@ let state = {
     chatScrollTop: 0,
     chatStickToBottom: true,
     roomTab: 'seats',
+    activeSection: 'live',
+    navScrollBound: false,
+    navFrame: 0,
   },
 };
 
@@ -335,14 +338,21 @@ function roomHtml(room) {
 }
 
 function mobileSectionNavHtml(isHost) {
+  const active = activeNavSection();
   return `
     <nav class="mobile-section-nav ${isHost ? 'has-host' : 'player-only'}" aria-label="Room sections">
-      <a class="active" href="#live">Live</a>
-      <a href="#bets">Bets</a>
-      <a href="#room">Room</a>
-      <button type="button" class="${state.ui.roomTab === 'chat' ? 'active' : ''}" data-toggle-chat>Chat</button>
-      ${isHost ? '<button type="button" data-toggle-host>Host</button>' : ''}
+      <a class="${active === 'live' ? 'active' : ''}" href="#live">Live</a>
+      <a class="${active === 'bets' ? 'active' : ''}" href="#bets">Bets</a>
+      <a class="${active === 'room' ? 'active' : ''}" href="#room">Room</a>
+      <button type="button" class="${active === 'chat' ? 'active' : ''}" data-toggle-chat>Chat</button>
+      ${isHost ? `<button type="button" class="${active === 'host' ? 'active' : ''}" data-toggle-host>Host</button>` : ''}
     </nav>`;
+}
+
+function activeNavSection() {
+  if (state.ui.hostConsoleOpen) return 'host';
+  if (state.ui.roomTab === 'chat') return 'chat';
+  return state.ui.activeSection || 'live';
 }
 
 function topBarHtml(room, me, isHost) {
@@ -1210,10 +1220,12 @@ function bindRoom() {
   bindHostConsole();
   bindTopicVote();
   bindChat();
+  bindSectionNav();
   for (const el of document.querySelectorAll('[data-room-tab]')) {
     el.addEventListener('click', () => {
       state.ui.roomTab = el.dataset.roomTab || 'seats';
       state.ui.chatOpen = false;
+      if (state.ui.roomTab !== 'chat') state.ui.activeSection = 'room';
       render();
     });
   }
@@ -1261,6 +1273,44 @@ function bindRoom() {
     select.addEventListener('change', syncDebaterAssignmentButton);
   }
   syncDebaterAssignmentButton();
+}
+
+function bindSectionNav() {
+  for (const el of document.querySelectorAll('.mobile-section-nav a[href^="#"]')) {
+    el.addEventListener('click', () => {
+      state.ui.activeSection = el.getAttribute('href').slice(1) || 'live';
+      if (state.ui.roomTab === 'chat') state.ui.roomTab = 'seats';
+      render();
+    });
+  }
+  if (state.ui.navScrollBound) return;
+  state.ui.navScrollBound = true;
+  window.addEventListener('scroll', scheduleActiveSectionSync, { passive: true });
+  window.addEventListener('resize', scheduleActiveSectionSync, { passive: true });
+}
+
+function scheduleActiveSectionSync() {
+  if (state.ui.navFrame) return;
+  state.ui.navFrame = requestAnimationFrame(() => {
+    state.ui.navFrame = 0;
+    syncActiveSectionFromViewport();
+  });
+}
+
+function syncActiveSectionFromViewport() {
+  if (!state.room || state.ui.hostConsoleOpen || state.ui.roomTab === 'chat') return;
+  const sections = ['live', 'bets', 'room']
+    .map((id) => ({ id, el: document.getElementById(id) }))
+    .filter((item) => item.el);
+  if (!sections.length) return;
+  const anchor = Math.min(window.innerHeight * 0.32, 220);
+  const current = sections
+    .map((item) => ({ id: item.id, distance: Math.abs(item.el.getBoundingClientRect().top - anchor) }))
+    .sort((a, b) => a.distance - b.distance)[0]?.id || 'live';
+  if (current !== state.ui.activeSection) {
+    state.ui.activeSection = current;
+    render();
+  }
 }
 
 function bindHostConsole() {
