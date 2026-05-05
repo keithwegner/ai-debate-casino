@@ -21,6 +21,7 @@ let state = {
     chatDraft: '',
     chatScrollTop: 0,
     chatStickToBottom: true,
+    roomTab: 'seats',
   },
 };
 
@@ -325,9 +326,7 @@ function roomHtml(room) {
           ${hecklesHtml(room, me)}
         </aside>
         <aside id="room" class="room-section" aria-label="Room details">
-          ${debatersHtml(room)}
-          ${leaderboardHtml(room)}
-          ${chatHtml(room, me, isHost)}
+          ${roomPanelHtml(room, me, isHost)}
         </aside>
       </section>
       ${mobileSectionNavHtml(isHost)}
@@ -341,7 +340,7 @@ function mobileSectionNavHtml(isHost) {
       <a class="active" href="#live">Live</a>
       <a href="#bets">Bets</a>
       <a href="#room">Room</a>
-      <button type="button" class="${state.ui.chatOpen ? 'active' : ''}" data-toggle-chat>Chat</button>
+      <button type="button" class="${state.ui.roomTab === 'chat' ? 'active' : ''}" data-toggle-chat>Chat</button>
       ${isHost ? '<button type="button" data-toggle-host>Host</button>' : ''}
     </nav>`;
 }
@@ -659,10 +658,14 @@ function juryMomentum(room) {
 }
 
 function debatersHtml(room) {
+  return `<section class="panel compact player-seats"><div class="kicker">Room</div><h3>Debaters</h3>${debatersContentHtml(room)}</section>`;
+}
+
+function debatersContentHtml(room) {
   const seats = room.debaters?.length
     ? room.debaters.map((d) => `<article class="debater ${d.id} ${d.kind === 'human' ? 'human-debater' : ''}"><div class="side-label">${h(d.sideLabel)}</div><h4>${h(d.displayName)}</h4><div class="muted">${h(d.archetype)}${d.kind === 'human' ? ' · Lobby player' : ''}</div><p>${h(d.tagline)}</p><div class="stance">${h(d.stance)}</div></article>`).join('')
     : '<p class="muted">Personas appear after topic selection.</p>';
-  return `<section class="panel compact player-seats"><div class="kicker">Room</div><h3>Debaters</h3>${seats}${lobbyHtml(room)}</section>`;
+  return `${seats}${lobbyHtml(room)}`;
 }
 
 function lobbyHtml(room) {
@@ -878,15 +881,43 @@ function hecklesHtml(room, me) {
 }
 
 function leaderboardHtml(room) {
-  const rows = room.settlements?.leaderboard || [...room.players].sort((a, b) => b.bankroll - a.bankroll || a.displayName.localeCompare(b.displayName)).map((p, idx) => ({ rank: idx + 1, userId: p.id, ...p }));
-  return `<section class="panel compact leaderboard"><div class="kicker">Room</div><h3>Leaderboard</h3><table><tbody>${rows.map((p) => `<tr class="${p.userId === state.session?.playerId || p.id === state.session?.playerId ? 'me-row' : ''}"><td>${h(p.rank)}</td><td>${h(p.displayName)}${p.isBot ? ' <span class="bot">bot</span>' : ''}</td><td>${chips(p.bankroll)}</td></tr>`).join('')}</tbody></table></section>`;
+  return `<section class="panel compact leaderboard"><div class="kicker">Room</div><h3>Leaderboard</h3>${leaderboardContentHtml(room)}</section>`;
 }
 
-function chatHtml(room, me, isHost) {
+function leaderboardContentHtml(room) {
+  const rows = room.settlements?.leaderboard || [...room.players].sort((a, b) => b.bankroll - a.bankroll || a.displayName.localeCompare(b.displayName)).map((p, idx) => ({ rank: idx + 1, userId: p.id, ...p }));
+  return `<table><tbody>${rows.map((p) => `<tr class="${p.userId === state.session?.playerId || p.id === state.session?.playerId ? 'me-row' : ''}"><td>${h(p.rank)}</td><td>${h(p.displayName)}${p.isBot ? ' <span class="bot">bot</span>' : ''}</td><td>${chips(p.bankroll)}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function roomPanelHtml(room, me, isHost) {
+  const tabs = [
+    ['seats', 'Seats'],
+    ['leaderboard', 'Standings'],
+    ['chat', 'Chat'],
+  ];
+  const active = tabs.some(([id]) => id === state.ui.roomTab) ? state.ui.roomTab : 'seats';
+  const content = active === 'leaderboard'
+    ? `<div class="room-panel-content leaderboard">${leaderboardContentHtml(room)}</div>`
+    : active === 'chat'
+      ? chatHtml(room, me, isHost, true)
+      : `<div class="room-panel-content player-seats">${debatersContentHtml(room)}</div>`;
+  return `
+    <section class="panel compact room-panel">
+      <div class="room-panel-head">
+        <div><div class="kicker">Room</div><h3>Room</h3></div>
+        <div class="room-tabs" role="tablist" aria-label="Room sections">
+          ${tabs.map(([id, label]) => `<button type="button" role="tab" data-room-tab="${id}" class="${active === id ? 'active' : ''}" aria-selected="${active === id ? 'true' : 'false'}">${h(label)}</button>`).join('')}
+        </div>
+      </div>
+      ${content}
+    </section>`;
+}
+
+function chatHtml(room, me, isHost, embedded = false) {
   const messages = room.chatMessages || [];
   const canSend = Boolean(me?.id && !me.isBot && !state.pendingAction);
   return `
-    <section id="chat" class="panel compact chat-panel ${state.ui.chatOpen ? 'open' : ''}" aria-label="Room chat">
+    <section id="chat" class="${embedded ? 'chat-panel embedded' : `panel compact chat-panel ${state.ui.chatOpen ? 'open' : ''}`}" aria-label="Room chat">
       <div class="chat-head">
         <div><div class="kicker">Room</div><h3>Chat</h3></div>
         <div class="chat-actions">
@@ -1154,6 +1185,13 @@ function bindRoom() {
   bindHostConsole();
   bindTopicVote();
   bindChat();
+  for (const el of document.querySelectorAll('[data-room-tab]')) {
+    el.addEventListener('click', () => {
+      state.ui.roomTab = el.dataset.roomTab || 'seats';
+      state.ui.chatOpen = false;
+      render();
+    });
+  }
   for (const el of document.querySelectorAll('[data-toggle-host]')) {
     el.addEventListener('click', () => {
       const drawer = document.getElementById('host-console');
@@ -1175,13 +1213,13 @@ function bindRoom() {
   }
   for (const el of document.querySelectorAll('[data-toggle-chat]')) {
     el.addEventListener('click', () => {
-      state.ui.chatOpen = !state.ui.chatOpen;
-      if (state.ui.chatOpen) {
-        const drawer = document.getElementById('host-console');
-        if (drawer) drawer.open = false;
-        resetHostConsoleState();
-      }
+      state.ui.roomTab = 'chat';
+      state.ui.chatOpen = false;
+      const drawer = document.getElementById('host-console');
+      if (drawer) drawer.open = false;
+      resetHostConsoleState();
       render();
+      requestAnimationFrame(() => document.getElementById('room')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     });
   }
   for (const el of document.querySelectorAll('[data-scroll-target]')) {
