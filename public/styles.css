@@ -3054,6 +3054,30 @@ textarea:focus {
   padding-bottom: 2rem !important;
 }
 
+.host-sheet-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  margin: -0.2rem 0 1rem;
+  padding: 0 0 0.9rem;
+}
+
+.host-sheet-head h2 {
+  margin: 0;
+}
+
+.host-sheet-head p {
+  margin: 0.18rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.host-sheet-close {
+  flex: 0 0 auto;
+}
+
 .host-drawer[open] .host-grid {
   min-height: min-content;
 }
@@ -3247,6 +3271,10 @@ textarea:focus {
     grid-column: 1 / -1 !important;
   }
 
+  .topbar button.host-toggle {
+    display: none !important;
+  }
+
   .next-action-bar {
     align-items: stretch;
     flex-direction: column;
@@ -3367,6 +3395,15 @@ textarea:focus {
     width: auto !important;
     height: auto !important;
     max-height: none !important;
+  }
+
+  .host-sheet-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .host-sheet-close {
+    width: 100%;
   }
 }
 
