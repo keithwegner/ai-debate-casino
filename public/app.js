@@ -286,7 +286,7 @@ function landingHtml() {
             <h2>Create a room</h2>
             <label>Your display name</label>
             <input name="displayName" value="Keith" maxlength="32" />
-            <button class="primary" type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('createRoom', 'Open the table')}</button>
+            <button class="primary" type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('createRoom', 'Create room')}</button>
           </form>
           <form id="joinForm" class="form-card cashier-card">
             <h2>Join a room</h2>
@@ -294,7 +294,7 @@ function landingHtml() {
             <input name="roomId" placeholder="ABC123" maxlength="12" value="${h(queryRoomId)}" />
             <label>Your display name</label>
             <input name="displayName" placeholder="Player name" maxlength="32" />
-            <button type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('joinRoom', 'Take a seat')}</button>
+            <button type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('joinRoom', 'Join room')}</button>
           </form>
         </div>
         <p class="fineprint">Fake chips only. No cash value. No prizes. No real-money wagering.</p>
@@ -416,7 +416,7 @@ function nextActionState(room, me, isHost) {
     return { kicker: isHumanDebater ? 'Your round' : 'Live now', title: 'Debate live', detail: isHumanDebater ? 'Watch for your turn timer and type when called.' : 'Follow the current turn and react as the audience jury.', tone: 'live' };
   }
   if (status === 'JUDGING' || status === 'SETTLEMENT') {
-    return { kicker: 'Judging', title: 'Scoring the debate', detail: 'The judge is reviewing the transcript and settling markets.', tone: 'judging' };
+    return { kicker: 'Judging', title: 'Scoring the debate', detail: 'The judge is reviewing the transcript and resolving bets.', tone: 'judging' };
   }
   if (status === 'RESULTS') {
     return { kicker: 'Results', title: 'Results are posted', detail: isHost ? 'Review the verdict or reset the room from host setup.' : 'Check the verdict, payouts, and audience read.', tone: 'results' };
@@ -447,7 +447,7 @@ function setupProgressSteps(room) {
   const resultsComplete = Boolean(room.verdict) || status === 'RESULTS';
 
   return [
-    stepState('Generate / Select Topic', !hasTopic || status === 'TOPIC_SELECTION', hasTopic, 'Set', 'Active', 'Next'),
+    stepState('Choose Topic', !hasTopic || status === 'TOPIC_SELECTION', hasTopic, 'Set', 'Active', 'Next'),
     stepState('Assign Debaters', hasTopic && !hasMarkets && !debatersConfirmed, hasDebaters, 'Assigned', 'Active', 'Next'),
     stepState('Post Odds', hasDebaters && !hasMarkets && debatersConfirmed, hasMarkets, 'Posted', 'Active', 'Next'),
     stepState('Betting Open', status === 'BETTING_OPEN', bettingComplete, 'Closed', 'Open', 'Queued'),
@@ -767,7 +767,7 @@ function verdictHtml(room) {
       <div class="score-grid">${scoreCardHtml(room.debaters[0], v.scores?.debater_a)}${scoreCardHtml(room.debaters[1], v.scores?.debater_b)}</div>
       ${audienceVsJudgeHtml(room)}
       <div class="callouts"><div><div class="kicker">Best line</div><blockquote>${formattedTextHtml(v.bestLine?.quote || '')}</blockquote></div><div><div class="kicker">Worst argument</div>${formattedTextHtml(v.worstArgument?.summary || '')}</div></div>
-      ${props ? `<h4>Prop settlement</h4><table><tbody>${props}</tbody></table>` : ''}
+      ${props ? `<h4>Bet results</h4><table><tbody>${props}</tbody></table>` : ''}
     </section>`;
 }
 
@@ -853,21 +853,21 @@ function sportsbookHtml(room, me) {
     const isHost = Boolean(state.session?.hostToken);
     return `
       <div class="kicker">Bets</div>
-      <h3>Betting window</h3>
+      <h3>Bets</h3>
       ${guidedEmptyHtml(
         isHost ? 'Post odds to open betting' : 'Waiting for odds',
-        isHost ? 'Assign debaters, then post odds from host setup so players can bet.' : 'The host has not posted markets yet. Betting opens after odds are published.',
+        isHost ? 'Assign debaters, then post odds from host setup so players can bet.' : 'The host has not posted odds yet. Betting opens after odds are published.',
         isHost ? '<button type="button" class="primary" data-toggle-host>Open host setup</button>' : ''
       )}
       <p class="fineprint">Fake chips only. No cash value.</p>`;
   }
   return `
     <div class="kicker">Bets</div>
-    <h3>Betting window</h3>
+    <h3>Bets</h3>
     <div class="bet-status ${room.status === 'BETTING_OPEN' ? 'open' : 'closed'}">${room.status === 'BETTING_OPEN' ? 'Betting open' : 'Betting locked / closed'}</div>
     ${unavailable ? `<p class="bet-blocked">${h(unavailable)}</p>` : ''}
     <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />
-    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small>${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Bet</button></article>`).join('')}</div>
+    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small><strong>Result rule:</strong> ${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Place bet</button></article>`).join('')}</div>
     <section class="my-bets"><h4>My bets</h4>${myBets.length ? `<table><tbody>${myBets.map((b) => `<tr><td>${h(b.marketLabel)}</td><td>${chips(b.amount)}</td><td>${h(b.status)}</td><td>${b.net === null ? '' : signedChips(b.net)}</td></tr>`).join('')}</tbody></table>` : '<p class="guided-note">Your active bets will appear here after you place one.</p>'}</section>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
 }
@@ -983,7 +983,7 @@ function hostControlsHtml(room) {
         ${setupProgressHtml(room)}
         <div class="host-grid">
           ${topicControlsHtml(room, canEdit)}
-          <div class="control-card"><h3>2. Debaters + odds</h3>${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}<button id="assignDebatersButton" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><p id="assignDebatersHelp" class="control-help">${h(debaterAssignmentHelpFromValues(defaultA, defaultB, room))}</p><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
+          <div class="control-card"><h3>2. Debaters and betting</h3>${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}<button id="assignDebatersButton" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><p id="assignDebatersHelp" class="control-help">${h(debaterAssignmentHelpFromValues(defaultA, defaultB, room))}</p><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><p class="control-help">${h(postOddsHelp(room, canEdit))}</p><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Add demo players + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
         </div>
       </section>
     </details>`;
@@ -1088,6 +1088,14 @@ function debaterAssignmentHelpFromValues(a, b, room) {
   }
 }
 
+function postOddsHelp(room, canEdit) {
+  if (!room?.topic) return 'Choose a topic before posting odds.';
+  if ((room.debaters?.length || 0) !== 2) return 'Assign both debaters before posting odds.';
+  if (!canEdit) return 'Odds are locked while a round is running.';
+  if (room.markets?.length) return 'Odds are posted. Players can bet while betting is open.';
+  return 'Ready to post betting options for the room.';
+}
+
 function personaLabel(persona) {
   const displayName = String(persona?.displayName || '').trim();
   const archetype = String(persona?.archetype || '').trim();
@@ -1133,7 +1141,7 @@ function processingState(room) {
   }
   if (!room || !room.running) return { active: false, title: '', detail: '', progress: 0 };
   if (room.status === 'DEBATE') return { active: true, title: 'AI debate in progress', detail: room.currentPhase, progress: processingProgress(room) };
-  if (room.status === 'JUDGING') return { active: true, title: 'Judge is deliberating', detail: 'Scoring arguments and settling prop markets.', progress: processingProgress(room) };
+  if (room.status === 'JUDGING') return { active: true, title: 'Judge is deliberating', detail: 'Scoring arguments and resolving bet results.', progress: processingProgress(room) };
   if (room.status === 'SETTLEMENT') return { active: true, title: 'Settling the board', detail: 'Calculating payouts and ranking the leaderboard.', progress: processingProgress(room) };
   return { active: true, title: 'AI is setting up the round', detail: room.currentPhase || 'Preparing the next step.', progress: processingProgress(room) };
 }
@@ -1523,8 +1531,8 @@ function buttonContent(action, label) {
 function actionLabel(action) {
   const labels = {
     accessCode: 'Checking invite',
-    createRoom: 'Opening the table',
-    joinRoom: 'Taking a seat',
+    createRoom: 'Creating room',
+    joinRoom: 'Joining room',
     generateTopics: 'Generating topics',
     selectTopic: 'Selecting topic',
     setCustomTopic: 'Normalizing topic',
