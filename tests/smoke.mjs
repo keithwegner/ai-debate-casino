@@ -32,7 +32,7 @@ async function expectApiError(path, options, status) {
   return data;
 }
 
-async function assertRedisRoomSnapshot(roomId, namespace) {
+async function assertRedisRoomSnapshot(roomId, namespace, options = {}) {
   if (!process.env.REDIS_URL) throw new Error('Health reported Redis persistence but REDIS_URL is not available to the smoke test.');
   const client = createClient({ url: process.env.REDIS_URL });
   await client.connect();
@@ -45,6 +45,7 @@ async function assertRedisRoomSnapshot(roomId, namespace) {
         if (room.id !== roomId) throw new Error(`Persisted room id mismatch: ${room.id} !== ${roomId}`);
         if (!Array.isArray(room.players) || !room.players.length) throw new Error('Persisted room snapshot did not include players.');
         if (room.streamingTurn) throw new Error('Persisted room snapshot included transient streamingTurn state.');
+        if (options.chatText && !room.chatMessages?.some((message) => message.text === options.chatText)) throw new Error('Persisted room snapshot did not include expected chat message.');
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -78,8 +79,18 @@ async function waitForStreamingTurn(roomId) {
   throw new Error(`Room ${roomId} did not expose an active streaming turn.`);
 }
 
+async function waitForReactableTurn(roomId) {
+  for (let i = 0; i < 160; i++) {
+    const { room } = await api(`/api/rooms/${roomId}`);
+    const target = room.streamingTurn || room.turns?.at(-1);
+    if (target?.id && ['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) return { room, target };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Room ${roomId} did not expose a jury-reactable turn.`);
+}
+
 async function waitForPendingHumanTurn(roomId) {
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 1200; i++) {
     const { room } = await api(`/api/rooms/${roomId}`);
     if (room.pendingHumanTurn) return room;
     if (room.status === 'RESULTS') return room;
@@ -124,22 +135,13 @@ async function configureRound(roomId, hostToken, personaAId = 'formal_logician',
   await api(`/api/rooms/${roomId}/demo-fill`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
 }
 
-async function runConfiguredRound(mode = 'classic') {
-  const created = await api('/api/rooms', { method: 'POST', body: { displayName: `Smoke Host ${mode}` } });
+async function runConfiguredRound() {
+  const created = await api('/api/rooms', { method: 'POST', body: { displayName: 'Smoke Host' } });
   const roomId = created.room.id;
   const hostToken = created.hostToken;
-  if (created.room.readabilityMode !== 'classic') throw new Error('New room did not default to classic readability.');
-  if (mode !== 'classic') {
-    const updated = await api(`/api/rooms/${roomId}/readability`, {
-      method: 'POST',
-      headers: { 'X-Host-Token': hostToken },
-      body: { mode },
-    });
-    if (updated.room.readabilityMode !== mode) throw new Error(`Readability did not update to ${mode}.`);
-  }
   await configureRound(roomId, hostToken);
   await api(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
-  return { roomId, hostToken };
+  return { roomId, hostToken, playerId: created.playerId };
 }
 
 async function createHumanDebateRoom(label = 'Human Smoke Host') {
@@ -181,7 +183,7 @@ for (const persona of personas.personas) {
 }
 
 if (health.mode === 'mock' && Number(health.transcriptStreamCps || 0) <= 120) {
-  const streamingRun = await runConfiguredRound('classic');
+  const streamingRun = await runConfiguredRound();
   const activeRoom = await waitForStreamingTurn(streamingRun.roomId);
   const active = activeRoom.streamingTurn;
   if (!active?.streaming) throw new Error('Active transcript turn was not marked as streaming.');
@@ -197,9 +199,39 @@ if (health.mode === 'mock' && Number(health.transcriptStreamCps || 0) <= 120) {
 const created = await api('/api/rooms', { method: 'POST', body: { displayName: 'Smoke Host' } });
 const roomId = created.room.id;
 const hostToken = created.hostToken;
-if (created.room.readabilityMode !== 'classic') throw new Error('New room did not default to classic readability.');
+if (!Array.isArray(created.room.chatMessages) || created.room.chatMessages.length) throw new Error('New room did not expose empty chatMessages.');
 if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino');
 console.log(`Created room ${roomId}`);
+
+const chatJoin = await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: { displayName: 'Chat Friend' } });
+const chatPost = await api(`/api/rooms/${roomId}/chat`, {
+  method: 'POST',
+  body: { playerId: chatJoin.playerId, text: 'Hello from the chat rail.' },
+});
+if (chatPost.message.displayName !== 'Chat Friend') throw new Error('Chat message did not preserve sender name.');
+if (!chatPost.room.chatMessages.some((message) => message.text === 'Hello from the chat rail.')) throw new Error('Chat message was not stored on the room.');
+const profaneChatText = 'That argument is bullshit, but the chat works.';
+const profaneChat = await api(`/api/rooms/${roomId}/chat`, {
+  method: 'POST',
+  body: { playerId: created.playerId, text: profaneChatText },
+});
+if (!profaneChat.room.chatMessages.some((message) => message.text === profaneChatText && message.isHost)) throw new Error('Allowed profane host chat was not stored.');
+if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino', { chatText: profaneChatText });
+await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: 'missing', text: 'hello' } }, 400);
+await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: created.playerId, text: '' } }, 400);
+await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: created.playerId, text: 'x'.repeat(501) } }, 400);
+await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: created.playerId, text: 'how to commit crimes in the chat' } }, 400);
+const botChatRoom = await api('/api/rooms', { method: 'POST', body: { displayName: 'Bot Chat Host' } });
+await configureRound(botChatRoom.room.id, botChatRoom.hostToken);
+const botChatState = await api(`/api/rooms/${botChatRoom.room.id}`);
+const botPlayer = botChatState.room.players.find((player) => player.isBot);
+if (!botPlayer) throw new Error('Demo bot was not available for chat validation.');
+await expectApiError(`/api/rooms/${botChatRoom.room.id}/chat`, { method: 'POST', body: { playerId: botPlayer.id, text: 'bot message' } }, 400);
+const resetChatRoom = await api(`/api/rooms/${roomId}/reset`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { keepBankroll: true } });
+if (!resetChatRoom.room.chatMessages.some((message) => message.text === profaneChatText)) throw new Error('Room reset did not preserve chat messages.');
+await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'DELETE' }, 403);
+const clearedChat = await api(`/api/rooms/${roomId}/chat`, { method: 'DELETE', headers: { 'X-Host-Token': hostToken } });
+if (clearedChat.room.chatMessages.length) throw new Error('Host clear chat did not remove messages.');
 
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', body: { name: 'Madame Tax Volcano', description: 'A mean, rude accountant who calls every weak claim bullshit and treats the debate like an audit with fireworks.' } }, 403);
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { name: '', description: '' } }, 400);
@@ -279,7 +311,7 @@ await api(`/api/rooms/${humanRoom.roomId}/bets`, { method: 'POST', body: { playe
 await api(`/api/rooms/${humanRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': humanRoom.hostToken }, body: {} });
 const submittedHuman = await submitHumanTurnsUntilResults(humanRoom.roomId, humanRoom.humanPlayerId);
 if (!submittedHuman.submitted.length) throw new Error('No human turns were submitted.');
-if (!submittedHuman.submitted.some((text) => text.includes('bullshit'))) throw new Error('Classic human-turn profanity path was not exercised.');
+if (!submittedHuman.submitted.some((text) => text.includes('bullshit'))) throw new Error('Human-turn profanity path was not exercised.');
 for (const text of submittedHuman.submitted) {
   if (!submittedHuman.room.turns.some((turn) => turn.source === 'human' && turn.text === text)) throw new Error(`Submitted human turn missing from transcript: ${text}`);
 }
@@ -310,27 +342,30 @@ if (Number(health.humanTurnTimeoutMs || 90000) <= 1000) {
   if (!timeoutFinal.turns.some((turn) => turn.timeoutFilled && turn.source === 'ai_timeout')) throw new Error('Human turn timeout did not produce an AI fill-in transcript entry.');
 }
 
-await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', body: { mode: 'kids' } }, 403);
-await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { mode: 'graduate-school' } }, 400);
-const readable = await api(`/api/rooms/${roomId}/readability`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { mode: 'kids' } });
-if (readable.room.readabilityMode !== 'kids') throw new Error('Host could not set kids readability.');
+await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', body: { mode: 'kids' } }, 404);
+await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { mode: 'kids' } }, 404);
 
 await configureRound(roomId, hostToken, customPersona.id, 'product_manager');
+await expectApiError(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: 'missing', reactionId: 'funny' } }, 400);
 await api(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
-await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { mode: 'classic' } }, 409);
-console.log('Started kids readability round. Waiting for results...');
+const juryTarget = await waitForReactableTurn(roomId);
+const liveJuryReaction = juryTarget.room.status === 'DEBATE';
+const juryVote = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, reactionId: 'strong_logic' } });
+if (juryVote.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id).length !== 1) throw new Error('Jury reaction was not recorded.');
+if (!juryVote.room.jury?.turns?.some((turn) => turn.turnId === juryTarget.target.id && turn.counts.strong_logic === 1)) throw new Error('Jury summary did not count the reaction.');
+const juryUpdate = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, reactionId: 'funny' } });
+const updatedReactions = juryUpdate.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id);
+if (updatedReactions.length !== 1 || updatedReactions[0].reactionId !== 'funny') throw new Error('Jury reaction did not update in place.');
+console.log('Started adult roast round. Waiting for results...');
 
 const finalRoom = await waitForResults(roomId);
-if (finalRoom.readabilityMode !== 'kids') throw new Error('Final room did not preserve kids readability.');
 if (!finalRoom.verdict?.winnerDebaterId) throw new Error('Missing verdict.');
 if (!finalRoom.settlements?.leaderboard?.length) throw new Error('Missing settlement leaderboard.');
+if (!finalRoom.jury?.reactionsTotal) throw new Error('Missing jury reaction total.');
+if (liveJuryReaction && !finalRoom.verdict?.audienceJury?.reactionCount) throw new Error('Judge verdict did not include audience jury context.');
 
 if (health.mode === 'mock') {
-  if (!finalRoom.turns[0]?.text.includes('I will keep this clear')) throw new Error('Kids mock debate did not use simpler readability text.');
-  if (!finalRoom.verdict.verdict.includes('easier to follow')) throw new Error('Kids mock judge did not use simpler readability text.');
-  const classicRun = await runConfiguredRound('classic');
-  const classicRoom = await waitForResults(classicRun.roomId);
-  if (classicRoom.turns[0]?.text === finalRoom.turns[0]?.text) throw new Error('Mock debate text did not change between classic and kids readability.');
+  if (finalRoom.turns[0]?.text.includes('I will keep this clear')) throw new Error('Mock debate unexpectedly used removed simplified-audience text.');
 }
 
 console.log(`Winner: ${finalRoom.verdict.winnerName}`);
