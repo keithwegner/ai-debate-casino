@@ -2431,6 +2431,49 @@ textarea:focus {
   color: var(--crimson) !important;
 }
 
+.next-action-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin: 0.72rem 0 1rem;
+  padding: 0.82rem 1rem !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: var(--line) !important;
+  box-shadow: 0 10px 30px rgba(31, 39, 34, 0.08) !important;
+}
+
+.next-action-bar h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.next-action-bar p {
+  margin: 0.12rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.next-action-bar.live {
+  border-color: rgba(13, 141, 98, 0.24) !important;
+  background: linear-gradient(90deg, rgba(233, 246, 239, 0.96), rgba(255, 255, 255, 0.92)) !important;
+}
+
+.next-action-bar.betting {
+  border-color: rgba(47, 111, 167, 0.2) !important;
+}
+
+.next-action-bar.judging,
+.next-action-bar.results {
+  border-color: rgba(183, 45, 66, 0.22) !important;
+}
+
+.next-action-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .setup-progress {
   position: static !important;
   margin: 0.72rem 0 1rem !important;
@@ -3202,6 +3245,26 @@ textarea:focus {
 
   .topbar .top-actions {
     grid-column: 1 / -1 !important;
+  }
+
+  .next-action-bar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.65rem;
+    margin: 0.58rem 0 0.82rem !important;
+    padding: 0.75rem !important;
+  }
+
+  .next-action-bar h2 {
+    font-size: 0.98rem;
+  }
+
+  .next-action-bar p {
+    font-size: 0.82rem;
+  }
+
+  .next-action-button {
+    width: 100%;
   }
 
   .setup-progress {

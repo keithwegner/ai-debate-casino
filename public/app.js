@@ -307,7 +307,7 @@ function roomHtml(room) {
   return `
     <main class="app-shell room-shell">
       ${topBarHtml(room, me, isHost)}
-      ${setupProgressHtml(room)}
+      ${nextActionBarHtml(room, me, isHost)}
       ${flashHtml()}
       ${processingHtml(room)}
       <section class="experience-grid">
@@ -357,6 +357,63 @@ function topBarHtml(room, me, isHost) {
       <div class="topbar-cell"><div class="kicker">You</div><div>${h(me?.displayName || 'Observer')} · <strong>${chips(me?.bankroll || 0)}</strong></div></div>
       <div class="top-actions">${isHost ? '<button type="button" class="host-toggle" data-toggle-host>Host</button>' : ''}<button data-action="copyLink">Copy link</button><button data-action="leaveRoom">Leave</button></div>
     </header>`;
+}
+
+function nextActionBarHtml(room, me, isHost) {
+  const action = nextActionState(room, me, isHost);
+  return `
+    <section class="next-action-bar panel ${action.tone}" aria-label="Current round action">
+      <div class="next-action-copy">
+        <div class="kicker">${h(action.kicker)}</div>
+        <h2>${h(action.title)}</h2>
+        <p>${h(action.detail)}</p>
+      </div>
+      ${action.button ? `<button type="button" class="next-action-button ${action.button.primary ? 'primary' : ''}" ${action.button.attrs || ''}>${h(action.button.label)}</button>` : ''}
+    </section>`;
+}
+
+function nextActionState(room, me, isHost) {
+  const status = room.status || 'LOBBY';
+  const hasTopic = Boolean(room.topic);
+  const hasDebaters = (room.debaters?.length || 0) === 2;
+  const hasMarkets = (room.markets?.length || 0) > 0;
+  const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
+
+  if (!hasTopic) {
+    return isHost
+      ? { kicker: 'Host next', title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom resolution.', tone: 'setup', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      : { kicker: 'Player next', title: room.topicVote?.open ? 'Suggest or vote on a topic' : 'Waiting for the topic', detail: room.topicVote?.open ? 'Add a resolution or back the one you want debated.' : 'The host is setting up the round.', tone: 'setup' };
+  }
+  if (!hasDebaters) {
+    return isHost
+      ? { kicker: 'Host next', title: 'Assign debaters', detail: 'Pick two AI debaters or one lobby player against an AI debater.', tone: 'setup', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      : { kicker: 'Player next', title: 'Debaters are being assigned', detail: 'The resolution is set. The matchup is next.', tone: 'setup' };
+  }
+  if (!hasMarkets) {
+    return isHost
+      ? { kicker: 'Host next', title: 'Post odds', detail: 'Publish markets so players can place fake-chip bets.', tone: 'betting', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      : { kicker: 'Player next', title: 'Odds are coming', detail: 'Review the matchup while the host prepares betting.', tone: 'betting' };
+  }
+  if (status === 'BETTING_OPEN') {
+    return isHost
+      ? { kicker: 'Host next', title: 'Betting is open', detail: 'Players can bet now. Start the debate when the table is ready.', tone: 'betting', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      : { kicker: 'Player next', title: isHumanDebater ? 'Betting is open to the audience' : 'Betting is open', detail: isHumanDebater ? 'You are debating this round, so betting is blocked for you.' : 'Pick a market and place your fake-chip bet before the debate starts.', tone: 'betting', button: { label: 'Go to bets', attrs: 'data-scroll-target="#bets"' } };
+  }
+  if (status === 'BETTING_LOCKED') {
+    return isHost
+      ? { kicker: 'Host next', title: 'Start the debate', detail: 'Bets are locked. Send the debaters to the stage.', tone: 'live', button: { label: 'Open host setup', attrs: 'data-toggle-host', primary: true } }
+      : { kicker: 'Player next', title: 'Debate is queued', detail: 'Bets are locked. The live turn will appear here next.', tone: 'live' };
+  }
+  if (status === 'DEBATE') {
+    return { kicker: isHumanDebater ? 'Your round' : 'Live now', title: 'Debate live', detail: isHumanDebater ? 'Watch for your turn timer and type when called.' : 'Follow the current turn and react as the audience jury.', tone: 'live' };
+  }
+  if (status === 'JUDGING' || status === 'SETTLEMENT') {
+    return { kicker: 'Judging', title: 'Scoring the debate', detail: 'The judge is reviewing the transcript and settling markets.', tone: 'judging' };
+  }
+  if (status === 'RESULTS') {
+    return { kicker: 'Results', title: 'Results are posted', detail: isHost ? 'Review the verdict or reset the room from host setup.' : 'Check the verdict, payouts, and audience read.', tone: 'results' };
+  }
+  return { kicker: 'Round status', title: room.currentPhase || 'Room open', detail: 'The next action will appear here as setup changes.', tone: 'setup' };
 }
 
 function setupProgressHtml(room) {
@@ -831,6 +888,7 @@ function hostControlsHtml(room) {
       <summary><span>Host console</span><small>Setup & admin</small></summary>
       <section class="host-controls pit-console">
         <div class="section-head"><div><div class="kicker">Host controls</div><h2>Host console</h2></div>${hostActionButtonsHtml(room)}</div>
+        ${setupProgressHtml(room)}
         <div class="host-grid">
           ${topicControlsHtml(room, canEdit)}
           <div class="control-card"><h3>2. Debaters + odds</h3>${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}<button id="assignDebatersButton" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><p id="assignDebatersHelp" class="control-help">${h(debaterAssignmentHelpFromValues(defaultA, defaultB, room))}</p><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
@@ -1072,6 +1130,11 @@ function bindRoom() {
         resetHostConsoleState();
       }
       render();
+    });
+  }
+  for (const el of document.querySelectorAll('[data-scroll-target]')) {
+    el.addEventListener('click', () => {
+      document.querySelector(el.dataset.scrollTarget)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
   for (const el of document.querySelectorAll('[data-action]')) {
