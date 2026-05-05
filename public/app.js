@@ -505,26 +505,40 @@ function humanTurnHtml(room, me) {
 function juryHtml(room, me) {
   if (!['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) return '';
   const target = juryTargetTurn(room);
+  const readableTarget = target && juryTurnIsReadable(target) ? target : null;
+  const hasRecordedRead = Boolean((room.jury?.reactionsTotal || 0) > 0);
+  if (!readableTarget && !hasRecordedRead) return '';
   const reactions = juryReactionOptions(room);
-  const existing = target ? (room.juryReactions || []).find((r) => r.playerId === me?.id && r.turnId === target.id) : null;
+  const existing = readableTarget ? (room.juryReactions || []).find((r) => r.playerId === me?.id && r.turnId === readableTarget.id) : null;
   const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
-  const canReact = Boolean(target && room.status === 'DEBATE' && me?.id && !me.isBot && !isHumanDebater);
-  const message = juryHelpText(room, target, me, isHumanDebater, existing);
+  const isAudienceMember = Boolean(me?.id && !me.isBot && !isHumanDebater);
+  const canReact = Boolean(readableTarget && room.status === 'DEBATE' && isAudienceMember);
+  const showButtons = Boolean(readableTarget && (!me?.id || isAudienceMember));
+  const message = juryHelpText(room, readableTarget, me, isHumanDebater, existing, hasRecordedRead);
   return `
     <section class="jury-panel panel inset" aria-label="Audience jury">
       <div class="jury-head">
-        <div><div class="kicker">Audience jury</div><h3>${target ? `React to ${h(target.speakerName)}` : 'Waiting for an argument'}</h3></div>
+        <div><div class="kicker">Audience jury</div><h3>${readableTarget ? `React to ${h(readableTarget.speakerName)}` : 'Audience read closed'}</h3></div>
         <div class="jury-count">${h(room.jury?.reactionsTotal || 0)} reads</div>
       </div>
       ${juryMomentumHtml(room)}
       <p class="muted small">${h(message)}</p>
-      <div class="jury-buttons">${reactions.map((reaction) => `<button data-action="submitJuryReaction" data-turn-id="${h(target?.id || '')}" data-reaction-id="${h(reaction.id)}" class="${existing?.reactionId === reaction.id ? 'active' : ''}" ${canReact ? '' : 'disabled'}>${h(reaction.label)}</button>`).join('')}</div>
+      ${showButtons
+        ? `<div class="jury-buttons" aria-label="${h(canReact ? 'Audience reactions open' : 'Audience reactions unavailable')}">${reactions.map((reaction) => `<button data-action="submitJuryReaction" data-turn-id="${h(readableTarget?.id || '')}" data-reaction-id="${h(reaction.id)}" class="${existing?.reactionId === reaction.id ? 'active' : ''}" ${canReact ? '' : 'disabled'}>${h(reaction.label)}</button>`).join('')}</div>`
+        : `<div class="jury-status">${h(message)}</div>`}
     </section>`;
 }
 
 function juryTargetTurn(room) {
   if (room.streamingTurn?.id) return room.streamingTurn;
   return [...(room.turns || [])].at(-1) || null;
+}
+
+function juryTurnIsReadable(turn) {
+  const text = String(turn?.text || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  const wordCount = text.split(' ').filter(Boolean).length;
+  return text.length >= 80 || wordCount >= 14;
 }
 
 function juryReactionOptions(room) {
@@ -537,13 +551,16 @@ function juryReactionOptions(room) {
   ];
 }
 
-function juryHelpText(room, target, me, isHumanDebater, existing) {
+function juryHelpText(room, target, me, isHumanDebater, existing, hasRecordedRead) {
   if (isHumanDebater) return 'You are debating this round, so the jury bench is for the audience.';
-  if (!target) return 'The jury opens as soon as the first turn starts.';
-  if (room.status !== 'DEBATE') return 'The jury is locked while the judge and settlement finish.';
+  if (!target) return hasRecordedRead
+    ? 'Audience reactions are closed. The jury meter stays up so everyone can compare the crowd read with the judge.'
+    : 'The jury stays hidden until there is a readable turn on stage.';
   if (!me?.id) return 'Join the room to sit on the audience jury.';
+  if (me.isBot) return 'Demo players cannot sit on the jury.';
+  if (room.status !== 'DEBATE') return 'This turn is readable, but reactions are locked while the judge and settlement finish.';
   if (existing) return `Your read: ${existing.label}. You can change it while the debate is live.`;
-  return `Mark the live turn while people have time to read it. One reaction per player per turn.`;
+  return 'Audience reactions unlock once a turn is readable. One reaction per player per turn while the debate is live.';
 }
 
 function juryMomentumHtml(room) {

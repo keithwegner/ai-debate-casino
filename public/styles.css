@@ -2873,12 +2873,30 @@ textarea:focus {
   gap: 0.45rem;
 }
 
+.jury-status {
+  margin-top: 0.5rem;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 0.72rem 0.8rem;
+  background: #f7f7f4;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
 .jury-buttons button {
   min-height: 2.45rem;
   padding: 0.48rem 0.5rem !important;
   border-radius: 9px !important;
   font-size: 0.8rem;
   line-height: 1.1;
+}
+
+.jury-buttons button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+  background: #f3f3ef !important;
+  color: var(--muted) !important;
 }
 
 .jury-buttons button.active {
