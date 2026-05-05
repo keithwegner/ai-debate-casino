@@ -469,6 +469,7 @@ function topicHtml(room, me) {
 function topicVoteHtml(room, me) {
   const topics = room.topics || [];
   const submission = myTopicSubmission(room, me);
+  const isHost = Boolean(state.session?.hostToken);
   const canSuggest = Boolean(state.session?.playerId && me?.id && !me.isBot && !submission && !state.pendingAction);
   const canVote = Boolean(state.session?.playerId && me?.id && !me.isBot && room.topicVote?.open && !state.pendingAction);
   return `
@@ -485,9 +486,17 @@ function topicVoteHtml(room, me) {
         </div>
       </form>
       <div class="topic-vote-list">
-        ${topics.length ? topics.map((topic) => topicVoteCardHtml(topic, room, me, canVote)).join('') : '<div class="topic-vote-empty">Waiting for candidates.</div>'}
+        ${topics.length ? topics.map((topic) => topicVoteCardHtml(topic, room, me, canVote)).join('') : guidedEmptyHtml(
+          isHost ? 'Generate topic candidates' : 'Waiting for topic options',
+          isHost ? 'Start with generated candidates or enter a custom resolution from host setup.' : 'The host is preparing topic options. You can suggest one while voting is open.',
+          isHost ? '<button type="button" class="primary" data-toggle-host>Open host setup</button>' : ''
+        )}
       </div>
     </section>`;
+}
+
+function guidedEmptyHtml(title, detail, actionHtml = '') {
+  return `<div class="guided-empty"><div><h3>${h(title)}</h3><p>${h(detail)}</p></div>${actionHtml}</div>`;
 }
 
 function topicVoteCardHtml(topic, room, me, canVote) {
@@ -682,7 +691,15 @@ function assignedDebaterSlotForPlayer(room, playerId) {
 function transcriptHtml(room) {
   const completedTurns = room.turns || [];
   const activeTurn = room.streamingTurn ? { ...room.streamingTurn, streaming: true } : null;
-  if (!completedTurns.length && !activeTurn) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
+  if (!completedTurns.length && !activeTurn) {
+    const isHost = Boolean(state.session?.hostToken);
+    const canStart = isHost && room.status === 'BETTING_LOCKED';
+    return `<section class="transcript empty-transcript">${guidedEmptyHtml(
+      canStart ? 'Start the debate' : 'Transcript will appear here',
+      canStart ? 'Bets are locked. Open host setup and start the debate when ready.' : 'Debate turns will stack here once the host starts the live round.',
+      canStart ? '<button type="button" class="primary" data-toggle-host>Open host setup</button>' : ''
+    )}</section>`;
+  }
   if (activeTurn) {
     return `
       <section class="transcript live-transcript">
@@ -820,7 +837,18 @@ function sportsbookHtml(room, me) {
   const myBets = room.bets.filter((b) => b.userId === me?.id);
   const humanDebater = humanDebaterForCurrentPlayer(room, me);
   const canBet = room.status === 'BETTING_OPEN' && !humanDebater;
-  if (!room.markets?.length) return `<div class="kicker">Bets</div><h3>Betting window</h3><p class="muted">The Oddsmaker has not posted lines yet.</p><p class="fineprint">Fake chips only. No cash value.</p>`;
+  if (!room.markets?.length) {
+    const isHost = Boolean(state.session?.hostToken);
+    return `
+      <div class="kicker">Bets</div>
+      <h3>Betting window</h3>
+      ${guidedEmptyHtml(
+        isHost ? 'Post odds to open betting' : 'Waiting for odds',
+        isHost ? 'Assign debaters, then post odds from host setup so players can bet.' : 'The host has not posted markets yet. Betting opens after odds are published.',
+        isHost ? '<button type="button" class="primary" data-toggle-host>Open host setup</button>' : ''
+      )}
+      <p class="fineprint">Fake chips only. No cash value.</p>`;
+  }
   return `
     <div class="kicker">Bets</div>
     <h3>Betting window</h3>
@@ -828,7 +856,7 @@ function sportsbookHtml(room, me) {
     ${humanDebater ? `<p class="bet-blocked">You are debating as ${h(humanDebater.sideLabel)}. Human debaters cannot bet in their own round.</p>` : ''}
     <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />
     <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small>${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Bet</button></article>`).join('')}</div>
-    <section class="my-bets"><h4>My bets</h4>${myBets.length ? `<table><tbody>${myBets.map((b) => `<tr><td>${h(b.marketLabel)}</td><td>${chips(b.amount)}</td><td>${h(b.status)}</td><td>${b.net === null ? '' : signedChips(b.net)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No active bets.</p>'}</section>
+    <section class="my-bets"><h4>My bets</h4>${myBets.length ? `<table><tbody>${myBets.map((b) => `<tr><td>${h(b.marketLabel)}</td><td>${chips(b.amount)}</td><td>${h(b.status)}</td><td>${b.net === null ? '' : signedChips(b.net)}</td></tr>`).join('')}</tbody></table>` : '<p class="guided-note">Your active bets will appear here after you place one.</p>'}</section>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
 }
 
