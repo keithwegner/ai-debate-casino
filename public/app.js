@@ -16,6 +16,7 @@ let state = {
   ui: {
     hostConsoleOpen: false,
     hostConsoleScrollTop: 0,
+    topicSuggestionDraft: '',
     chatOpen: false,
     chatDraft: '',
     chatScrollTop: 0,
@@ -218,6 +219,7 @@ function stopLiveUpdates() {
 
 function render() {
   captureHostConsoleState();
+  captureTopicVoteState();
   captureChatState();
   if (needsAccess()) {
     root.innerHTML = accessHtml();
@@ -239,6 +241,7 @@ function render() {
   root.innerHTML = roomHtml(state.room);
   bindRoom();
   restoreHostConsoleState();
+  restoreTopicVoteState();
   restoreChatState();
   syncCountdownTimer();
 }
@@ -310,7 +313,7 @@ function roomHtml(room) {
       <section class="experience-grid">
         <section id="live" class="stage panel live-section" aria-label="Debate table">
           <div class="table-marker" aria-hidden="true"></div>
-          ${topicHtml(room)}
+          ${topicHtml(room, me)}
           ${humanTurnHtml(room, me)}
           ${juryHtml(room, me)}
           ${transcriptHtml(room)}
@@ -394,9 +397,81 @@ function stepState(label, isCurrent, isComplete, completeText, currentText, upco
   return { label, state, status };
 }
 
-function topicHtml(room) {
-  if (!room.topic) return `<div class="empty-state"><h2>No resolution yet</h2><p>The host can generate candidates, enter a custom topic, or run a one-click demo.</p></div>`;
-  return `<div class="topic-card"><div class="kicker">Resolution</div><h2>${h(room.topic.resolution)}</h2><div class="topic-meta"><span>${h(room.topic.category)}</span><span>Comedy ${h(room.topic.comedyPotential)}/10</span><span>${h(room.topic.safetyRating)}</span></div></div>`;
+function topicHtml(room, me) {
+  if (!room.topic) return topicVoteHtml(room, me);
+  return `
+    <div class="topic-card">
+      <div class="kicker">Resolution</div>
+      <h2>${h(room.topic.resolution)}</h2>
+      <div class="topic-meta"><span>${h(room.topic.category)}</span><span>Comedy ${h(room.topic.comedyPotential)}/10</span><span>${h(room.topic.safetyRating)}</span></div>
+      ${topicVoteResultHtml(room.topic.voteResult)}
+    </div>`;
+}
+
+function topicVoteHtml(room, me) {
+  const topics = room.topics || [];
+  const submission = myTopicSubmission(room, me);
+  const canSuggest = Boolean(state.session?.playerId && me?.id && !me.isBot && !submission && !state.pendingAction);
+  const canVote = Boolean(state.session?.playerId && me?.id && !me.isBot && room.topicVote?.open && !state.pendingAction);
+  return `
+    <section class="topic-vote panel inset" aria-label="Topic vote">
+      <div class="topic-vote-head">
+        <div><div class="kicker">Topic vote</div><h2>${topics.length ? 'Choose the resolution' : 'No resolution yet'}</h2></div>
+        <div class="topic-vote-count">${h(room.topicVote?.totalVotes || 0)} votes</div>
+      </div>
+      <form id="topicSuggestionForm" class="topic-suggestion">
+        <label for="topicSuggestion">Suggest a topic</label>
+        <div class="topic-suggestion-row">
+          <textarea id="topicSuggestion" rows="2" maxlength="320" placeholder="Resolved: The office microwave deserves its own passport." ${canSuggest ? '' : 'disabled'}>${h(state.ui.topicSuggestionDraft)}</textarea>
+          <button type="submit" class="primary" ${canSuggest ? '' : 'disabled'}>${buttonContent('submitTopicSuggestion', submission ? 'Suggested' : 'Submit')}</button>
+        </div>
+      </form>
+      <div class="topic-vote-list">
+        ${topics.length ? topics.map((topic) => topicVoteCardHtml(topic, room, me, canVote)).join('') : '<div class="topic-vote-empty">Waiting for candidates.</div>'}
+      </div>
+    </section>`;
+}
+
+function topicVoteCardHtml(topic, room, me, canVote) {
+  const count = topicVoteCount(room, topic.id);
+  const voted = myTopicVote(room, me)?.topicId === topic.id;
+  const leading = room.topicVote?.leaderTopicId === topic.id;
+  const source = topic.source === 'player' ? `Suggested by ${topic.submittedByName || 'Player'}` : 'House candidate';
+  return `
+    <article class="topic-vote-card ${leading ? 'leading' : ''} ${voted ? 'voted' : ''}">
+      <div class="topic-vote-card-head"><span>${h(source)}</span>${leading ? '<strong>Leading</strong>' : ''}</div>
+      <h3>${h(topic.resolution)}</h3>
+      <div class="topic-meta"><span>${h(topic.category)}</span><span>Comedy ${h(topic.comedyPotential)}/10</span><span>${h(topic.safetyRating)}</span></div>
+      <div class="topic-vote-actions">
+        <span>${h(count)} ${count === 1 ? 'vote' : 'votes'}</span>
+        <button data-action="voteTopic" data-topic-id="${h(topic.id)}" ${canVote ? '' : 'disabled'}>${voted ? 'Voted' : 'Vote'}</button>
+      </div>
+    </article>`;
+}
+
+function topicVoteResultHtml(result) {
+  if (!result) return '';
+  const votes = result.votes || 0;
+  const text = result.mode === 'top_vote'
+    ? `Won topic vote with ${votes} ${votes === 1 ? 'vote' : 'votes'}.`
+    : result.mode === 'host_override'
+      ? `Host override locked this topic with ${votes} ${votes === 1 ? 'vote' : 'votes'}.`
+      : result.mode === 'host_custom'
+        ? 'Host custom topic.'
+        : '';
+  return text ? `<p class="topic-vote-result">${h(text)}</p>` : '';
+}
+
+function topicVoteCount(room, topicId) {
+  return room.topicVote?.counts?.find((count) => count.topicId === topicId)?.count || 0;
+}
+
+function myTopicVote(room, me) {
+  return (room.topicVote?.votes || []).find((vote) => vote.playerId === me?.id) || null;
+}
+
+function myTopicSubmission(room, me) {
+  return (room.topicVote?.submissions || []).find((submission) => submission.playerId === me?.id) || null;
 }
 
 function humanTurnHtml(room, me) {
@@ -740,11 +815,28 @@ function hostControlsHtml(room) {
       <section class="host-controls pit-console">
         <div class="section-head"><div><div class="kicker">Host controls</div><h2>Host console</h2></div>${hostActionButtonsHtml(room)}</div>
         <div class="host-grid">
-          <div class="control-card"><h3>1. Topic</h3><textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canEdit ? '' : 'disabled'}></textarea><button data-action="generateTopics" ${canEdit ? '' : 'disabled'}>Generate topic candidates</button><label>Custom resolution</label><input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canEdit ? '' : 'disabled'} /><button data-action="setCustomTopic" ${canEdit ? '' : 'disabled'}>Use custom topic</button><div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · Comedy ${h(t.comedyPotential)}/10</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canEdit ? '' : 'disabled'}>Select</button></article>`).join('')}</div></div>
+          ${topicControlsHtml(room, canEdit)}
           <div class="control-card"><h3>2. Debaters + odds</h3>${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}<button id="assignDebatersButton" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><p id="assignDebatersHelp" class="control-help">${h(debaterAssignmentHelpFromValues(defaultA, defaultB, room))}</p><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Demo-fill audience + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
         </div>
       </section>
     </details>`;
+}
+
+function topicControlsHtml(room, canEdit) {
+  const voteOpen = Boolean(room.topicVote?.open && !room.topic);
+  const canControl = canEdit && voteOpen;
+  const hasCandidates = Boolean((room.topics || []).length);
+  return `
+    <div class="control-card">
+      <h3>1. Topic</h3>
+      <textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canControl ? '' : 'disabled'}></textarea>
+      <button data-action="generateTopics" ${canControl ? '' : 'disabled'}>Generate topic candidates</button>
+      <button data-action="closeTopicVote" ${canControl && hasCandidates ? '' : 'disabled'}>Lock top vote</button>
+      <label>Custom resolution</label>
+      <input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canControl ? '' : 'disabled'} />
+      <button data-action="setCustomTopic" ${canControl ? '' : 'disabled'}>Use custom topic</button>
+      <div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · ${h(topicVoteCount(room, t.id))} votes</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canControl ? '' : 'disabled'}>Override & lock</button></article>`).join('')}</div>
+    </div>`;
 }
 
 function hostActionButtonsHtml(room) {
@@ -941,6 +1033,7 @@ function bindLanding() {
 function bindRoom() {
   markPendingControls();
   bindHostConsole();
+  bindTopicVote();
   bindChat();
   for (const el of document.querySelectorAll('[data-toggle-host]')) {
     el.addEventListener('click', () => {
@@ -1010,6 +1103,30 @@ function resetHostConsoleState() {
   state.ui.hostConsoleScrollTop = 0;
 }
 
+function bindTopicVote() {
+  const form = document.getElementById('topicSuggestionForm');
+  const textarea = document.getElementById('topicSuggestion');
+  if (!form || !textarea) return;
+  textarea.addEventListener('input', () => {
+    state.ui.topicSuggestionDraft = textarea.value;
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await handleAction('submitTopicSuggestion');
+  });
+}
+
+function captureTopicVoteState() {
+  const textarea = document.getElementById('topicSuggestion');
+  if (textarea) state.ui.topicSuggestionDraft = textarea.value;
+}
+
+function restoreTopicVoteState() {
+  const textarea = document.getElementById('topicSuggestion');
+  if (!textarea) return;
+  if (textarea.value !== state.ui.topicSuggestionDraft) textarea.value = state.ui.topicSuggestionDraft;
+}
+
 function bindChat() {
   const form = document.getElementById('chatForm');
   const textarea = document.getElementById('chatText');
@@ -1065,6 +1182,7 @@ function resetChatState() {
   state.ui.chatDraft = '';
   state.ui.chatScrollTop = 0;
   state.ui.chatStickToBottom = true;
+  state.ui.topicSuggestionDraft = '';
 }
 
 async function handleAction(action, payload = {}) {
@@ -1090,6 +1208,7 @@ async function handleAction(action, payload = {}) {
   const inputs = {
     topicPrompt: document.getElementById('topicPrompt')?.value || '',
     customTopic: document.getElementById('customTopic')?.value || '',
+    topicSuggestion: document.getElementById('topicSuggestion')?.value || '',
     customPersonaName: document.getElementById('customPersonaName')?.value || '',
     customPersonaProfile: document.getElementById('customPersonaProfile')?.value || '',
     debaterA: document.getElementById('debaterA')?.value,
@@ -1102,8 +1221,22 @@ async function handleAction(action, payload = {}) {
     let data;
     switch (action) {
       case 'generateTopics': data = await api(`${roomPath}/topics/generate`, { method: 'POST', host: true, body: { prompt: inputs.topicPrompt } }); state.message = 'Topic candidates generated.'; break;
-      case 'selectTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { topicId: payload.topicId } }); state.message = 'Topic selected.'; break;
+      case 'selectTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { topicId: payload.topicId } }); state.message = 'Topic locked by host override.'; break;
       case 'setCustomTopic': data = await api(`${roomPath}/topic`, { method: 'POST', host: true, body: { customTopic: inputs.customTopic } }); state.message = 'Custom topic selected.'; break;
+      case 'submitTopicSuggestion':
+        validateTopicSuggestion(inputs.topicSuggestion);
+        data = await api(`${roomPath}/topics/submit`, { method: 'POST', body: { playerId: state.session.playerId, text: inputs.topicSuggestion } });
+        state.ui.topicSuggestionDraft = '';
+        state.message = 'Topic suggested.';
+        break;
+      case 'voteTopic':
+        data = await api(`${roomPath}/topics/vote`, { method: 'POST', body: { playerId: state.session.playerId, topicId: payload.topicId } });
+        state.message = 'Topic vote recorded.';
+        break;
+      case 'closeTopicVote':
+        data = await api(`${roomPath}/topics/close`, { method: 'POST', host: true, body: {} });
+        state.message = 'Top topic locked.';
+        break;
       case 'setPersonas': {
         const slots = [parseDebaterSelection(inputs.debaterA), parseDebaterSelection(inputs.debaterB)];
         const assignmentMode = debaterAssignmentMode(slots);
@@ -1168,6 +1301,12 @@ function validateCustomDebaterInputs(name, description) {
   if (cleanDescription.length < 10 || cleanDescription.length > 600) throw new Error('Debater description must be 10-600 characters.');
 }
 
+function validateTopicSuggestion(text) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (clean.length < 2) throw new Error('Type a topic before submitting.');
+  if (clean.length > 320) throw new Error('Topic suggestions must be 320 characters or fewer.');
+}
+
 function validateHumanTurnInput(text) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim();
   if (clean.length < 2) throw new Error('Type your turn before submitting.');
@@ -1202,6 +1341,9 @@ function actionLabel(action) {
     generateTopics: 'Generating topics',
     selectTopic: 'Selecting topic',
     setCustomTopic: 'Normalizing topic',
+    submitTopicSuggestion: 'Submitting topic',
+    voteTopic: 'Recording vote',
+    closeTopicVote: 'Locking top vote',
     setPersonas: 'Assigning debaters',
     createCustomDebater: 'Generating draft',
     acceptCustomDebater: 'Accepting debater',
