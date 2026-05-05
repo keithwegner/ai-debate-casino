@@ -304,8 +304,9 @@ function landingHtml() {
 function roomHtml(room) {
   const me = currentPlayer(room);
   const isHost = Boolean(state.session?.hostToken);
+  const liveClass = room.status === 'DEBATE' ? 'debate-live' : '';
   return `
-    <main class="app-shell room-shell">
+    <main class="app-shell room-shell ${liveClass}">
       ${topBarHtml(room, me, isHost)}
       ${nextActionBarHtml(room, me, isHost)}
       ${flashHtml()}
@@ -679,14 +680,25 @@ function assignedDebaterSlotForPlayer(room, playerId) {
 }
 
 function transcriptHtml(room) {
-  const turns = [...(room.turns || []), ...(room.streamingTurn ? [{ ...room.streamingTurn, streaming: true }] : [])];
-  if (!turns.length) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
-  return `<section class="transcript"><h3>Live transcript</h3>${turns.map((turn) => turnHtml(turn, room)).join('')}</section>`;
+  const completedTurns = room.turns || [];
+  const activeTurn = room.streamingTurn ? { ...room.streamingTurn, streaming: true } : null;
+  if (!completedTurns.length && !activeTurn) return `<section class="transcript empty-transcript"><h3>Transcript</h3><p class="muted">Debate turns will appear here as the match progresses.</p></section>`;
+  if (activeTurn) {
+    return `
+      <section class="transcript live-transcript">
+        <div class="live-turn-feature">
+          <div class="live-turn-label"><span class="dot gold"></span><span>Current turn</span></div>
+          ${turnHtml(activeTurn, room, { featured: true })}
+        </div>
+        ${completedTurns.length ? `<div class="completed-turns"><h3>Earlier turns</h3>${completedTurns.map((turn) => turnHtml(turn, room)).join('')}</div>` : ''}
+      </section>`;
+  }
+  return `<section class="transcript"><h3>Live transcript</h3>${completedTurns.map((turn) => turnHtml(turn, room)).join('')}</section>`;
 }
 
-function turnHtml(t, room) {
+function turnHtml(t, room, options = {}) {
   const body = t.streaming ? streamingTurnBodyHtml(t.text) : (t.text ? formattedTextHtml(t.text) : '<p class="typing-placeholder">Preparing response...</p>');
-  return `<article class="turn ${t.speakerDebaterId} ${t.streaming ? 'streaming-turn' : ''}" data-turn-id="${h(t.id || '')}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div><div class="turn-body" data-turn-body="${h(t.id || '')}">${body}</div>${turnJuryHtml(t, room)}</article>`;
+  return `<article class="turn ${t.speakerDebaterId} ${t.streaming ? 'streaming-turn' : ''} ${options.featured ? 'featured-turn' : ''}" data-turn-id="${h(t.id || '')}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div><div class="turn-body" data-turn-body="${h(t.id || '')}">${body}</div>${turnJuryHtml(t, room)}</article>`;
 }
 
 function turnJuryHtml(turn, room) {
