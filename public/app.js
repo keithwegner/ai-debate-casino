@@ -354,7 +354,7 @@ function topBarHtml(room, me, isHost) {
       <div class="topbar-cell room-cell"><div class="kicker">Room</div><div class="room-code">${h(room.id)}</div></div>
       <div class="topbar-cell"><div class="kicker">Phase</div><div class="phase"><span class="dot ${statusClass(room.status)}"></span>${h(room.currentPhase)}</div></div>
       <div class="topbar-cell"><div class="kicker">AI</div><div class="muted small">${h(ai)}</div></div>
-      <div class="topbar-cell"><div class="kicker">You</div><div>${h(me?.displayName || 'Observer')} · <strong>${chips(me?.bankroll || 0)}</strong></div></div>
+      <div class="topbar-cell player-cell"><div class="kicker">You</div><div class="player-status"><span class="player-name">${h(me?.displayName || 'Observer')}</span><strong>${chips(me?.bankroll || 0)}</strong></div></div>
       <div class="top-actions">${isHost ? '<button type="button" class="host-toggle" data-toggle-host>Host</button>' : ''}<button data-action="copyLink">Copy link</button><button data-action="leaveRoom">Leave</button></div>
     </header>`;
 }
