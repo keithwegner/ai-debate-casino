@@ -46,6 +46,7 @@ async function assertRedisRoomSnapshot(roomId, namespace, options = {}) {
         if (!Array.isArray(room.players) || !room.players.length) throw new Error('Persisted room snapshot did not include players.');
         if (room.streamingTurn) throw new Error('Persisted room snapshot included transient streamingTurn state.');
         if (options.chatText && !room.chatMessages?.some((message) => message.text === options.chatText)) throw new Error('Persisted room snapshot did not include expected chat message.');
+        if (options.topicText && !room.topics?.some((topic) => topic.resolution === options.topicText)) throw new Error('Persisted room snapshot did not include expected topic vote candidate.');
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -119,11 +120,14 @@ async function submitHumanTurnsUntilResults(roomId, playerId, textFactory = null
 }
 
 async function configureRound(roomId, hostToken, personaAId = 'formal_logician', personaBId = 'product_manager') {
-  await api(`/api/rooms/${roomId}/topic`, {
-    method: 'POST',
-    headers: { 'X-Host-Token': hostToken },
-    body: { customTopic: 'Resolved: The office microwave should get its own office.' },
-  });
+  const current = await api(`/api/rooms/${roomId}`);
+  if (!current.room.topic) {
+    await api(`/api/rooms/${roomId}/topic`, {
+      method: 'POST',
+      headers: { 'X-Host-Token': hostToken },
+      body: { customTopic: 'Resolved: The office microwave should get its own office.' },
+    });
+  }
   const assigned = await api(`/api/rooms/${roomId}/personas`, {
     method: 'POST',
     headers: { 'X-Host-Token': hostToken },
@@ -200,6 +204,7 @@ const created = await api('/api/rooms', { method: 'POST', body: { displayName: '
 const roomId = created.room.id;
 const hostToken = created.hostToken;
 if (!Array.isArray(created.room.chatMessages) || created.room.chatMessages.length) throw new Error('New room did not expose empty chatMessages.');
+if (!created.room.topicVote?.open || created.room.topicVote.totalVotes !== 0) throw new Error('New room did not expose open empty topicVote state.');
 if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino');
 console.log(`Created room ${roomId}`);
 
@@ -227,11 +232,56 @@ const botChatState = await api(`/api/rooms/${botChatRoom.room.id}`);
 const botPlayer = botChatState.room.players.find((player) => player.isBot);
 if (!botPlayer) throw new Error('Demo bot was not available for chat validation.');
 await expectApiError(`/api/rooms/${botChatRoom.room.id}/chat`, { method: 'POST', body: { playerId: botPlayer.id, text: 'bot message' } }, 400);
+await api(`/api/rooms/${botChatRoom.room.id}/reset`, { method: 'POST', headers: { 'X-Host-Token': botChatRoom.hostToken }, body: { keepBankroll: true } });
+const botVoteGenerated = await api(`/api/rooms/${botChatRoom.room.id}/topics/generate`, { method: 'POST', headers: { 'X-Host-Token': botChatRoom.hostToken }, body: {} });
+await expectApiError(`/api/rooms/${botChatRoom.room.id}/topics/submit`, { method: 'POST', body: { playerId: botPlayer.id, text: 'Resolved: Bots should pick the topic.' } }, 400);
+await expectApiError(`/api/rooms/${botChatRoom.room.id}/topics/vote`, { method: 'POST', body: { playerId: botPlayer.id, topicId: botVoteGenerated.room.topics[0].id } }, 400);
 const resetChatRoom = await api(`/api/rooms/${roomId}/reset`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { keepBankroll: true } });
 if (!resetChatRoom.room.chatMessages.some((message) => message.text === profaneChatText)) throw new Error('Room reset did not preserve chat messages.');
 await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'DELETE' }, 403);
 const clearedChat = await api(`/api/rooms/${roomId}/chat`, { method: 'DELETE', headers: { 'X-Host-Token': hostToken } });
 if (clearedChat.room.chatMessages.length) throw new Error('Host clear chat did not remove messages.');
+
+const generatedTopics = await api(`/api/rooms/${roomId}/topics/generate`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { prompt: 'break room constitutional crisis' } });
+if (!generatedTopics.room.topics.length || !generatedTopics.room.topicVote?.open) throw new Error('Topic generation did not open the topic vote.');
+const generatedTopicId = generatedTopics.room.topics[0].id;
+const submittedTopic = await api(`/api/rooms/${roomId}/topics/submit`, {
+  method: 'POST',
+  body: { playerId: chatJoin.playerId, text: 'Resolved: The office microwave should be elected floor manager.' },
+});
+if (!submittedTopic.topic?.id || submittedTopic.topic.source !== 'player') throw new Error('Player topic submission did not create a player candidate.');
+if (!submittedTopic.room.topicVote.submissions.some((submission) => submission.playerId === chatJoin.playerId && submission.topicId === submittedTopic.topic.id)) throw new Error('Topic submission was not tracked in topicVote state.');
+if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino', { topicText: submittedTopic.topic.resolution });
+await expectApiError(`/api/rooms/${roomId}/topics/submit`, { method: 'POST', body: { playerId: chatJoin.playerId, text: 'Resolved: The copier should be promoted too.' } }, 400);
+await expectApiError(`/api/rooms/${roomId}/topics/submit`, { method: 'POST', body: { playerId: created.playerId, text: 'Resolved: how to commit crimes should become orientation.' } }, 400);
+await expectApiError(`/api/rooms/${roomId}/topics/submit`, { method: 'POST', body: { playerId: 'missing', text: 'Resolved: Missing players should not submit.' } }, 400);
+await api(`/api/rooms/${roomId}/topics/vote`, { method: 'POST', body: { playerId: created.playerId, topicId: generatedTopicId } });
+const changedVote = await api(`/api/rooms/${roomId}/topics/vote`, { method: 'POST', body: { playerId: created.playerId, topicId: submittedTopic.topic.id } });
+if (changedVote.room.topicVote.votes.filter((vote) => vote.playerId === created.playerId).length !== 1) throw new Error('Topic vote change created duplicate votes for one player.');
+const extraVoter = await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: { displayName: 'Topic Voter' } });
+const leaderVote = await api(`/api/rooms/${roomId}/topics/vote`, { method: 'POST', body: { playerId: extraVoter.playerId, topicId: submittedTopic.topic.id } });
+if (leaderVote.room.topicVote.leaderTopicId !== submittedTopic.topic.id) throw new Error('Topic vote leader did not update after votes.');
+await expectApiError(`/api/rooms/${roomId}/topics/close`, { method: 'POST', body: {} }, 403);
+const closedVote = await api(`/api/rooms/${roomId}/topics/close`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
+if (closedVote.room.topic?.id !== submittedTopic.topic.id) throw new Error('Closing topic vote did not lock the leading topic.');
+if (closedVote.room.topic.voteResult?.mode !== 'top_vote' || closedVote.room.topic.voteResult.votes !== 2) throw new Error('Locked topic did not preserve top-vote result metadata.');
+await expectApiError(`/api/rooms/${roomId}/topics/vote`, { method: 'POST', body: { playerId: created.playerId, topicId: submittedTopic.topic.id } }, 409);
+const resetVoteRoom = await api(`/api/rooms/${roomId}/reset`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { keepBankroll: true } });
+if (resetVoteRoom.room.topic || resetVoteRoom.room.topics.length || resetVoteRoom.room.topicVote.votes.length || resetVoteRoom.room.topicVote.submissions.length) throw new Error('Room reset did not clear topic voting state.');
+
+const overrideRoom = await api('/api/rooms', { method: 'POST', body: { displayName: 'Override Host' } });
+const overrideGuest = await api(`/api/rooms/${overrideRoom.room.id}/join`, { method: 'POST', body: { displayName: 'Override Voter' } });
+const overrideGenerated = await api(`/api/rooms/${overrideRoom.room.id}/topics/generate`, { method: 'POST', headers: { 'X-Host-Token': overrideRoom.hostToken }, body: {} });
+const [overrideLeader, overrideTarget] = overrideGenerated.room.topics;
+await api(`/api/rooms/${overrideRoom.room.id}/topics/vote`, { method: 'POST', body: { playerId: overrideGuest.playerId, topicId: overrideLeader.id } });
+const overrideLocked = await api(`/api/rooms/${overrideRoom.room.id}/topic`, { method: 'POST', headers: { 'X-Host-Token': overrideRoom.hostToken }, body: { topicId: overrideTarget.id } });
+if (overrideLocked.room.topic?.id !== overrideTarget.id) throw new Error('Host override did not lock the selected non-leader topic.');
+if (overrideLocked.room.topic.voteResult?.mode !== 'host_override') throw new Error('Host override did not record override vote result metadata.');
+
+const noVoteRoom = await api('/api/rooms', { method: 'POST', body: { displayName: 'No Vote Host' } });
+const noVoteGenerated = await api(`/api/rooms/${noVoteRoom.room.id}/topics/generate`, { method: 'POST', headers: { 'X-Host-Token': noVoteRoom.hostToken }, body: {} });
+const noVoteClosed = await api(`/api/rooms/${noVoteRoom.room.id}/topics/close`, { method: 'POST', headers: { 'X-Host-Token': noVoteRoom.hostToken }, body: {} });
+if (noVoteClosed.room.topic?.id !== noVoteGenerated.room.topics[0].id) throw new Error('No-vote close did not lock the first candidate.');
 
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', body: { name: 'Madame Tax Volcano', description: 'A mean, rude accountant who calls every weak claim bullshit and treats the debate like an audit with fireworks.' } }, 403);
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { name: '', description: '' } }, 400);

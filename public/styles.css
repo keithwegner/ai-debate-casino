@@ -2543,6 +2543,136 @@ textarea:focus {
   line-height: 1.12 !important;
 }
 
+.topic-vote {
+  display: grid;
+  gap: 0.95rem;
+  padding: 1rem !important;
+  background: #ffffff !important;
+  border: 1px solid var(--line) !important;
+  color: var(--ink) !important;
+}
+
+.topic-vote-head,
+.topic-vote-actions,
+.topic-vote-card-head,
+.topic-suggestion-row {
+  display: flex;
+  gap: 0.65rem;
+}
+
+.topic-vote-head,
+.topic-vote-actions,
+.topic-vote-card-head {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.topic-vote-head h2 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.topic-vote-count,
+.topic-vote-card-head strong,
+.topic-vote-result {
+  border: 1px solid rgba(13, 141, 98, 0.18);
+  border-radius: 999px;
+  background: #e9f6ef;
+  color: #0d6f4d;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.topic-vote-count,
+.topic-vote-card-head strong {
+  padding: 0.25rem 0.5rem;
+  white-space: nowrap;
+}
+
+.topic-vote-result {
+  display: inline-flex;
+  margin: 0.85rem 0 0;
+  padding: 0.35rem 0.6rem;
+}
+
+.topic-suggestion {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.topic-suggestion label {
+  font-size: 0.78rem;
+  font-weight: 850;
+  color: var(--ink-soft);
+}
+
+.topic-suggestion-row {
+  align-items: stretch;
+}
+
+.topic-suggestion textarea {
+  min-height: 3rem;
+  resize: vertical;
+}
+
+.topic-suggestion button {
+  min-width: 6.25rem;
+}
+
+.topic-vote-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.topic-vote-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fffefb;
+}
+
+.topic-vote-card.leading {
+  border-color: rgba(13, 141, 98, 0.32);
+  background: #fbfffc;
+}
+
+.topic-vote-card.voted {
+  box-shadow: inset 3px 0 0 #0d8d62;
+}
+
+.topic-vote-card h3 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.32;
+}
+
+.topic-vote-card-head {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.topic-vote-actions span {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.topic-vote-actions button {
+  min-height: 2rem !important;
+  padding: 0.32rem 0.7rem !important;
+}
+
+.topic-vote-empty {
+  padding: 1.1rem;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .transcript {
   margin-top: 1rem;
 }
@@ -3121,6 +3251,17 @@ textarea:focus {
 
   .topic-card h2 {
     font-size: 1.42rem !important;
+  }
+
+  .topic-suggestion-row,
+  .topic-vote-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .topic-suggestion button,
+  .topic-vote-actions button {
+    width: 100%;
   }
 
   .empty-state,

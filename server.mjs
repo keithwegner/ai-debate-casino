@@ -199,6 +199,8 @@ function createRoom(hostName) {
     version: 1,
     players: [createPlayer(hostName || 'Host', true, false)],
     topics: [],
+    topicSubmissions: [],
+    topicVotes: [],
     topic: null,
     debaters: [],
     customPersonas: [],
@@ -263,6 +265,8 @@ function reviveRoom(rawRoom) {
     version: Number(rawRoom?.version || 1),
     players: Array.isArray(rawRoom?.players) ? rawRoom.players : [],
     topics: Array.isArray(rawRoom?.topics) ? rawRoom.topics : [],
+    topicSubmissions: Array.isArray(rawRoom?.topicSubmissions) ? rawRoom.topicSubmissions : [],
+    topicVotes: Array.isArray(rawRoom?.topicVotes) ? rawRoom.topicVotes : [],
     topic: rawRoom?.topic || null,
     debaters: Array.isArray(rawRoom?.debaters) ? rawRoom.debaters : [],
     customPersonas: Array.isArray(rawRoom?.customPersonas) ? rawRoom.customPersonas : [],
@@ -345,6 +349,7 @@ function publicRoom(room) {
     },
     players: room.players.map((p) => ({ ...p })),
     topics: room.topics,
+    topicVote: topicVoteSummary(room),
     topic: room.topic,
     debaters: room.debaters,
     customPersonas: room.customPersonas || [],
@@ -532,19 +537,46 @@ async function handleApi(req, res, url) {
 
     if (method === 'POST' && action === 'topics/generate') {
       requireHost(req, room);
+      assertTopicVoteOpen(room);
       const body = await readJson(req);
-      room.topics = (await safeGenerateTopics(body.prompt || '')).map((t, i) => normalizeTopic(t, i));
+      const playerTopics = (room.topics || []).filter((topic) => topic.source === 'player');
+      const generatedTopics = (await safeGenerateTopics(body.prompt || '')).map((t, i) => normalizeTopic({ ...t, source: 'host', order: i }, i));
+      room.topics = [...generatedTopics, ...playerTopics].map((topic, i) => ({ ...topic, order: i }));
+      pruneTopicVotes(room);
       room.error = null;
       setPhase(room, 'TOPIC_SELECTION', 'Topic selection');
       pushComment(room, 'Topic Master posted fresh candidates.');
       return sendJson(res, 200, { room: publicRoom(room) });
     }
 
+    if (method === 'POST' && action === 'topics/submit') {
+      const body = await readJson(req);
+      const result = await submitTopicCandidate(room, body.playerId, body.text);
+      return sendJson(res, 201, { topic: result.topic, moderation: result.moderation, room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'topics/vote') {
+      const body = await readJson(req);
+      const vote = voteForTopic(room, body.playerId, body.topicId);
+      return sendJson(res, 200, { vote, room: publicRoom(room) });
+    }
+
+    if (method === 'POST' && action === 'topics/close') {
+      requireHost(req, room);
+      assertTopicVoteOpen(room);
+      const leader = topicVoteLeader(room);
+      if (!leader) throw apiError(400, 'No topic candidates to lock.');
+      lockTopic(room, leader, { mode: 'top_vote' });
+      return sendJson(res, 200, { room: publicRoom(room) });
+    }
+
     if (method === 'POST' && action === 'topic') {
       requireHost(req, room);
+      assertTopicVoteOpen(room);
       const body = await readJson(req);
       let topic = null;
       let moderation = null;
+      let mode = 'host_override';
       if (body.customTopic) {
         moderation = await safeNormalizeCustomTopic(body.customTopic);
         if (moderation.decision === 'reject') {
@@ -553,25 +585,14 @@ async function handleApi(req, res, url) {
           return sendJson(res, 400, { error: moderation.reason, moderation, room: publicRoom(room) });
         }
         topic = normalizeTopic({ id: id('topic_'), ...moderation });
+        mode = 'host_custom';
       } else if (body.topicId) {
         topic = room.topics.find((t) => t.id === body.topicId) || SEED_TOPICS.find((t) => t.id === body.topicId);
       } else if (body.topic) {
         topic = body.topic;
       }
       if (!topic) throw apiError(400, 'No topic selected.');
-      room.topic = normalizeTopic(topic);
-      room.markets = [];
-      room.bets = [];
-      room.juryReactions = [];
-      room.turns = [];
-      room.streamingTurn = null;
-      room.verdict = null;
-      room.settlements = null;
-      room.heckles = room.heckles.filter((h) => h.status === 'spent');
-      assignDefaultDebaters(room);
-      room.error = null;
-      setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
-      pushComment(room, `Resolution locked: ${room.topic.resolution}`);
+      lockTopic(room, topic, { mode });
       return sendJson(res, 200, { room: publicRoom(room), moderation });
     }
 
@@ -698,8 +719,8 @@ async function handleApi(req, res, url) {
     if (method === 'POST' && action === 'quick-demo') {
       requireHost(req, room);
       if (!room.topic) {
-        room.topics = (await safeGenerateTopics('Maximize comedy and demo clarity.')).map((t, i) => normalizeTopic(t, i));
-        room.topic = room.topics[0] || normalizeTopic(SEED_TOPICS[0]);
+        if (!room.topics.length) room.topics = (await safeGenerateTopics('Maximize comedy and demo clarity.')).map((t, i) => normalizeTopic({ ...t, source: 'host', order: i }, i));
+        lockTopic(room, topicVoteLeader(room) || room.topics[0] || normalizeTopic(SEED_TOPICS[0]), { mode: room.topicVotes?.length ? 'top_vote' : 'demo' });
       }
       if (room.debaters.length !== 2) assignDefaultDebaters(room);
       if (!room.markets.length) await postOdds(room);
@@ -742,7 +763,7 @@ async function serveStatic(req, res, url) {
 
 function normalizeTopic(topic, i = 0) {
   const fallback = SEED_TOPICS[i % SEED_TOPICS.length];
-  return {
+  const normalized = {
     id: cleanText(topic.id || `topic_${i + 1}`, 64).replace(/[^a-zA-Z0-9_-]/g, '_') || id('topic_'),
     resolution: cleanText(topic.resolution, 260) || fallback.resolution,
     sideA: cleanText(topic.sideA, 240) || fallback.sideA,
@@ -752,6 +773,153 @@ function normalizeTopic(topic, i = 0) {
     safetyRating: cleanText(topic.safetyRating || 'safe', 32),
     suggestedPersonas: Array.isArray(topic.suggestedPersonas) ? topic.suggestedPersonas.map((x) => cleanText(x, 50)).filter(Boolean).slice(0, 4) : ['Formal Logician', 'Chaos Gremlin'],
   };
+  if (topic.source) normalized.source = cleanText(topic.source, 24);
+  if (topic.submittedBy) normalized.submittedBy = cleanText(topic.submittedBy, 80);
+  if (topic.submittedByName) normalized.submittedByName = cleanText(topic.submittedByName, 80);
+  if (topic.createdAt) normalized.createdAt = topic.createdAt;
+  if (Number.isFinite(Number(topic.order))) normalized.order = Number(topic.order);
+  if (topic.voteResult) normalized.voteResult = topic.voteResult;
+  return normalized;
+}
+
+function assertTopicVoteOpen(room) {
+  if (room.topic) throw apiError(409, 'Topic voting is closed after a resolution is locked.');
+  if (room.running || ACTIVE_ROOM_STATUSES.has(room.status)) throw apiError(409, 'Topic voting is closed while a round is running.');
+}
+
+function topicVoteSummary(room) {
+  const topics = Array.isArray(room.topics) ? room.topics : [];
+  const validTopicIds = new Set(topics.map((topic) => topic.id));
+  const votes = (room.topicVotes || []).filter((vote) => validTopicIds.has(vote.topicId));
+  const countsByTopic = new Map(topics.map((topic) => [topic.id, 0]));
+  for (const vote of votes) countsByTopic.set(vote.topicId, (countsByTopic.get(vote.topicId) || 0) + 1);
+  const counts = topics.map((topic, index) => ({
+    topicId: topic.id,
+    count: countsByTopic.get(topic.id) || 0,
+    order: Number.isFinite(Number(topic.order)) ? Number(topic.order) : index,
+  }));
+  const leader = topicVoteLeader(room);
+  const leaderCount = leader ? countsByTopic.get(leader.id) || 0 : 0;
+  return {
+    open: !room.topic && !room.running && !ACTIVE_ROOM_STATUSES.has(room.status),
+    submissions: room.topicSubmissions || [],
+    votes,
+    counts,
+    totalVotes: votes.length,
+    leaderTopicId: leader?.id || null,
+    leaderCount,
+    result: room.topic?.voteResult || null,
+  };
+}
+
+function topicVoteLeader(room) {
+  const topics = Array.isArray(room.topics) ? room.topics : [];
+  if (!topics.length) return null;
+  const counts = new Map(topics.map((topic) => [topic.id, 0]));
+  for (const vote of room.topicVotes || []) {
+    if (counts.has(vote.topicId)) counts.set(vote.topicId, (counts.get(vote.topicId) || 0) + 1);
+  }
+  return [...topics]
+    .map((topic, index) => ({ topic, count: counts.get(topic.id) || 0, order: Number.isFinite(Number(topic.order)) ? Number(topic.order) : index }))
+    .sort((a, b) => b.count - a.count || a.order - b.order)[0]?.topic || null;
+}
+
+function topicVoteCount(room, topicId) {
+  return (room.topicVotes || []).filter((vote) => vote.topicId === topicId).length;
+}
+
+function pruneTopicVotes(room) {
+  const topicIds = new Set((room.topics || []).map((topic) => topic.id));
+  room.topicVotes = (room.topicVotes || []).filter((vote) => topicIds.has(vote.topicId));
+  room.topicSubmissions = (room.topicSubmissions || []).filter((submission) => topicIds.has(submission.topicId));
+}
+
+function resetTopicVoteState(room) {
+  room.topics = [];
+  room.topicSubmissions = [];
+  room.topicVotes = [];
+}
+
+async function submitTopicCandidate(room, playerId, rawText) {
+  assertTopicVoteOpen(room);
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) throw apiError(400, 'Player not found.');
+  if (player.isBot) throw apiError(400, 'Demo players cannot suggest topics.');
+  if ((room.topicSubmissions || []).some((submission) => submission.playerId === player.id)) throw apiError(400, 'You already suggested a topic this round.');
+  const moderation = await safeNormalizeCustomTopic(rawText);
+  if (moderation.decision === 'reject') {
+    room.error = moderation.reason;
+    touch(room);
+    throw apiError(400, moderation.reason);
+  }
+  const createdAt = now();
+  const topic = normalizeTopic({
+    id: id('topic_'),
+    ...moderation,
+    source: 'player',
+    submittedBy: player.id,
+    submittedByName: player.displayName,
+    createdAt,
+    order: (room.topics || []).length,
+  });
+  const submission = { id: id('topic_submission_'), roomId: room.id, topicId: topic.id, playerId: player.id, displayName: player.displayName, createdAt };
+  room.topics = [...(room.topics || []), topic].map((item, index) => ({ ...item, order: Number.isFinite(Number(item.order)) ? Number(item.order) : index }));
+  room.topicSubmissions = [...(room.topicSubmissions || []), submission];
+  room.error = null;
+  const wasTopicSelection = room.status === 'TOPIC_SELECTION';
+  room.status = 'TOPIC_SELECTION';
+  room.currentPhase = 'Topic selection';
+  if (!wasTopicSelection) room.phaseStartedAt = now();
+  pushComment(room, `${player.displayName} suggested a topic.`);
+  return { topic, moderation };
+}
+
+function voteForTopic(room, playerId, topicId) {
+  assertTopicVoteOpen(room);
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) throw apiError(400, 'Player not found.');
+  if (player.isBot) throw apiError(400, 'Demo players cannot vote on topics.');
+  const topic = (room.topics || []).find((candidate) => candidate.id === topicId);
+  if (!topic) throw apiError(400, 'Topic candidate not found.');
+  const existingIndex = (room.topicVotes || []).findIndex((vote) => vote.playerId === player.id);
+  const vote = {
+    id: existingIndex >= 0 ? room.topicVotes[existingIndex].id : id('topic_vote_'),
+    roomId: room.id,
+    playerId: player.id,
+    displayName: player.displayName,
+    topicId: topic.id,
+    createdAt: existingIndex >= 0 ? room.topicVotes[existingIndex].createdAt : now(),
+    updatedAt: now(),
+  };
+  if (existingIndex >= 0) room.topicVotes[existingIndex] = vote;
+  else room.topicVotes = [...(room.topicVotes || []), vote];
+  pushComment(room, `${player.displayName} voted on the topic board.`);
+  return vote;
+}
+
+function lockTopic(room, topic, options = {}) {
+  const normalized = normalizeTopic(topic);
+  const votes = topicVoteCount(room, normalized.id);
+  normalized.voteResult = {
+    mode: options.mode || 'host_override',
+    votes,
+    totalVotes: (room.topicVotes || []).length,
+    leaderTopicId: topicVoteLeader(room)?.id || null,
+    lockedAt: now(),
+  };
+  room.topic = normalized;
+  room.markets = [];
+  room.bets = [];
+  room.juryReactions = [];
+  room.turns = [];
+  room.streamingTurn = null;
+  room.verdict = null;
+  room.settlements = null;
+  room.heckles = room.heckles.filter((h) => h.status === 'spent');
+  assignDefaultDebaters(room);
+  room.error = null;
+  setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
+  pushComment(room, `Resolution locked: ${room.topic.resolution}`);
 }
 
 function assignDefaultDebaters(room) {
@@ -1363,7 +1531,7 @@ function resetRoom(room, keepBankroll = true) {
   room.status = 'LOBBY';
   room.currentPhase = 'Lobby';
   room.phaseStartedAt = now();
-  room.topics = [];
+  resetTopicVoteState(room);
   room.topic = null;
   room.debaters = [];
   room.customPersonas = [];
