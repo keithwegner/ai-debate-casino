@@ -25,6 +25,7 @@ let state = {
     activeSection: 'live',
     navScrollBound: false,
     navFrame: 0,
+    bettingExpiryRenderKey: '',
   },
 };
 
@@ -331,8 +332,7 @@ function roomHtml(room) {
           ${verdictHtml(room)}
         </section>
         <aside id="bets" class="sportsbook panel bets-section ${betsSectionClass(room)}" aria-label="Bets and heckles">
-          ${sportsbookHtml(room, me)}
-          ${hecklesHtml(room, me)}
+          ${roundActionPanelHtml(room, me)}
         </aside>
         <aside id="room" class="room-section" aria-label="Room details">
           ${roomPanelHtml(room, me, isHost)}
@@ -345,9 +345,11 @@ function roomHtml(room) {
 
 function mobileSectionNavHtml(room, isHost, loop) {
   const active = activeNavSection();
+  const betting = bettingWindowState(room);
+  const betsLabel = betting.done && ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(room.status) ? 'Heckles' : 'Bets';
   const items = [
     ['live', 'Live', '#live'],
-    ['bets', 'Bets', '#bets'],
+    ['bets', betsLabel, '#bets'],
     ['room', 'Room', '#room'],
   ];
   return `
@@ -360,9 +362,10 @@ function mobileSectionNavHtml(room, isHost, loop) {
 
 function navBadgeHtml(section, loop) {
   const current = loop.current?.id || '';
+  const betting = bettingWindowState(state.room);
   const labels = {
     live: current === 'debate' ? 'Now' : current === 'results' ? 'Judge' : current === 'replay' ? 'Done' : '',
-    bets: current === 'bets' ? 'Now' : '',
+    bets: current === 'bets' ? 'Now' : betting.done && ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(state.room?.status) ? 'Codes' : '',
     room: ['topic', 'debaters'].includes(current) ? 'Setup' : '',
     chat: '',
     host: loop.role === 'Host' && ['topic', 'debaters', 'bets', 'replay'].includes(current) ? 'Next' : '',
@@ -392,10 +395,85 @@ function topBarHtml(room, me, isHost) {
 
 function betsSectionClass(room) {
   const hasMarkets = Boolean(room.markets?.length);
+  const betting = bettingWindowState(room);
+  const hecklesVisible = hecklesVisibleState(room);
   return [
     hasMarkets ? 'has-markets' : 'bets-pending',
-    room.status === 'BETTING_OPEN' ? 'betting-open' : 'betting-closed',
+    betting.active ? 'betting-open' : 'betting-closed',
+    betting.done ? 'betting-done' : '',
+    hecklesVisible ? 'heckles-only' : '',
   ].join(' ');
+}
+
+function bettingWindowState(room) {
+  const status = room?.status || '';
+  const windowState = room?.bettingWindow || null;
+  const hasMarkets = Boolean(room?.markets?.length);
+  const remainingMs = bettingWindowRemainingMs(windowState);
+  const doneByStatus = ['BETTING_LOCKED', 'DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
+  const expiredByClient = Boolean(status === 'BETTING_OPEN' && windowState && !windowState.done && remainingMs <= 0);
+  const done = Boolean(doneByStatus || (windowState && (windowState.done || expiredByClient)));
+  const active = Boolean(status === 'BETTING_OPEN' && hasMarkets && windowState && !done);
+  return {
+    exists: Boolean(windowState),
+    active,
+    done,
+    expiredByClient,
+    remainingMs: Math.max(0, remainingMs),
+    durationMs: Number(windowState?.durationMs || 0),
+    doneReason: doneByStatus && !windowState?.done ? 'debate_started' : windowState?.doneReason || (expiredByClient ? 'timer_elapsed' : ''),
+    eligibleCount: Number(windowState?.eligibleCount || 0),
+    bettedCount: Number(windowState?.bettedCount || 0),
+    openedAt: windowState?.openedAt || '',
+    closesAt: windowState?.closesAt || '',
+  };
+}
+
+function bettingWindowRemainingMs(windowState) {
+  if (!windowState) return 0;
+  const closesAtMs = Date.parse(windowState.closesAt || '');
+  if (Number.isFinite(closesAtMs)) return Math.max(0, closesAtMs - Date.now());
+  const fallbackRemaining = Number(windowState.remainingMs || 0);
+  return Number.isFinite(fallbackRemaining) ? Math.max(0, fallbackRemaining) : 0;
+}
+
+function bettingWindowPercent(betting) {
+  if (!betting.durationMs) return betting.remainingMs > 0 ? 100 : 0;
+  return clamp((betting.remainingMs / betting.durationMs) * 100, 0, 100);
+}
+
+function bettingWindowCopy(betting) {
+  if (!betting.exists) return 'Betting opens when the host posts odds.';
+  if (betting.active) {
+    const waiting = Math.max(0, betting.eligibleCount - betting.bettedCount);
+    if (!betting.eligibleCount) return 'No eligible bettors are waiting, so the host can start immediately.';
+    return waiting
+      ? `${waiting} ${waiting === 1 ? 'bettor still needs' : 'bettors still need'} to place a bet, or the timer can run out.`
+      : 'Every eligible bettor has placed a bet.';
+  }
+  if (betting.doneReason === 'all_bettors_ready') return 'All eligible bettors placed a bet. Heckle Codes are open until the debate moves into judging.';
+  if (betting.doneReason === 'timer_elapsed') return 'The betting timer elapsed. Heckle Codes are open until the debate moves into judging.';
+  if (betting.doneReason === 'no_eligible_bettors') return 'No eligible bettors are waiting. The host can start immediately.';
+  return 'Betting is closed for this round.';
+}
+
+function bettingWindowPanelHtml(betting) {
+  if (!betting.exists) return '';
+  return `
+    <section class="betting-window ${betting.active ? 'active' : 'done'}" aria-live="polite">
+      <div class="betting-window-head">
+        <div><div class="kicker">Betting window</div><h4>${betting.active ? 'Place bets now' : 'Betting done'}</h4></div>
+        <strong data-betting-countdown>${h(betting.active ? formatCountdown(betting.remainingMs) : 'Done')}</strong>
+      </div>
+      <p>${h(bettingWindowCopy(betting))}</p>
+      <div class="countdown-meter"><span data-betting-countdown-meter style="width:${bettingWindowPercent(betting)}%"></span></div>
+      <small>${h(betting.bettedCount)} of ${h(betting.eligibleCount)} eligible bettors ready</small>
+    </section>`;
+}
+
+function hecklesVisibleState(room) {
+  const betting = bettingWindowState(room);
+  return Boolean(room?.markets?.length && ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(room.status) && (room.status !== 'BETTING_OPEN' || betting.done));
 }
 
 function roundLoopHtml(loop) {
@@ -418,6 +496,7 @@ function roundLoopState(room, me, isHost) {
   const hasTopic = Boolean(room.topic);
   const hasDebaters = (room.debaters?.length || 0) === 2;
   const hasMarkets = (room.markets?.length || 0) > 0;
+  const betting = bettingWindowState(room);
   const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
   const debateStarted = ['BETTING_LOCKED', 'DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
   const debateComplete = ['JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
@@ -426,9 +505,9 @@ function roundLoopState(room, me, isHost) {
     ? 'topic'
     : !hasDebaters
       ? 'debaters'
-      : !hasMarkets || status === 'BETTING_OPEN'
+      : !hasMarkets || betting.active
         ? 'bets'
-        : ['BETTING_LOCKED', 'DEBATE'].includes(status)
+        : ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(status)
           ? 'debate'
           : ['JUDGING', 'SETTLEMENT'].includes(status)
             ? 'results'
@@ -439,7 +518,7 @@ function roundLoopState(room, me, isHost) {
   const steps = [
     loopStep('topic', 'Topic', currentId, hasTopic, hasTopic ? 'Set' : 'Choose'),
     loopStep('debaters', 'Debaters', currentId, hasDebaters, hasDebaters ? 'Assigned' : 'Pick'),
-    loopStep('bets', 'Bets', currentId, debateStarted, status === 'BETTING_OPEN' ? 'Open' : hasMarkets ? 'Posted' : 'Post'),
+    loopStep('bets', 'Bets', currentId, debateStarted || betting.done, betting.active ? 'Open' : hasMarkets ? 'Done' : 'Post'),
     loopStep('debate', 'Debate', currentId, debateComplete, status === 'DEBATE' ? 'Live' : debateStarted ? 'Queued' : 'Start'),
     loopStep('results', 'Results', currentId, resultsComplete, resultsComplete ? 'Posted' : ['JUDGING', 'SETTLEMENT'].includes(status) ? 'Judging' : 'Pending'),
     loopStep('replay', 'Replay', currentId, false, resultsComplete ? 'Ready' : 'Later'),
@@ -458,13 +537,18 @@ function roundLoopState(room, me, isHost) {
   }
   if (!hasMarkets) {
     return isHost
-      ? loopState({ role, steps, title: 'Post odds', detail: 'Publish markets so players can place fake-chip bets.', tone: 'betting', action: { label: 'Open betting tools', attrs: 'data-toggle-host', primary: true } })
+      ? loopState({ role, steps, title: 'Post odds', detail: 'Publish markets to open a 90-second fake-chip betting window.', tone: 'betting', action: { label: 'Open betting tools', attrs: 'data-toggle-host', primary: true } })
       : loopState({ role, steps, title: 'Odds are coming', detail: 'Review the matchup while the host prepares betting.', tone: 'betting', action: { label: 'Review debaters', attrs: 'data-scroll-target="#room"' } });
   }
-  if (status === 'BETTING_OPEN') {
+  if (betting.active) {
     return isHost
-      ? loopState({ role, steps, title: 'Betting is open', detail: 'Players can bet now. Start the debate when the table is ready.', tone: 'betting', action: { label: 'Start when ready', attrs: 'data-toggle-host', primary: true } })
-      : loopState({ role, steps, title: isHumanDebater ? 'Betting is open to the audience' : 'Betting is open', detail: isHumanDebater ? 'You are debating this round, so betting is blocked for you.' : 'Pick a market and place your fake-chip bet before the debate starts.', tone: 'betting', action: isHumanDebater ? null : { label: 'Go to bets', attrs: 'data-scroll-target="#bets"', primary: true } });
+      ? loopState({ role, steps, title: 'Betting window is open', detail: `${formatCountdown(betting.remainingMs)} left. ${bettingWindowCopy(betting)}`, tone: 'betting', action: { label: 'Watch betting', attrs: 'data-scroll-target="#bets"', primary: true } })
+      : loopState({ role, steps, title: isHumanDebater ? 'Betting is open to the audience' : 'Place your bet now', detail: isHumanDebater ? 'You are debating this round, so betting is blocked for you.' : `${formatCountdown(betting.remainingMs)} left. Pick one market before betting closes.`, tone: 'betting', action: isHumanDebater ? null : { label: 'Go to bets', attrs: 'data-scroll-target="#bets"', primary: true } });
+  }
+  if (status === 'BETTING_OPEN' && betting.done) {
+    return isHost
+      ? loopState({ role, steps, title: 'Start the debate', detail: bettingWindowCopy(betting), tone: 'live', action: { label: 'Start debate', attrs: 'data-toggle-host', primary: true } })
+      : loopState({ role, steps, title: 'Heckle Codes are open', detail: 'Betting is done. Buy a code now if you want to influence the next debater.', tone: 'live', action: { label: 'Go to Heckle Codes', attrs: 'data-scroll-target="#bets"', primary: true } });
   }
   if (status === 'BETTING_LOCKED') {
     return isHost
@@ -512,6 +596,7 @@ function roleGuidanceHtml(room, me, isHost, loop = roundLoopState(room, me, isHo
 
 function roleGuidanceState(room, me, isHost, loop) {
   const status = room.status || 'LOBBY';
+  const betting = bettingWindowState(room);
   const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
   const base = isHost
     ? { role: 'Host role', badge: 'You control setup' }
@@ -520,7 +605,8 @@ function roleGuidanceState(room, me, isHost, loop) {
   if (isHost) {
     if (loop.current.id === 'topic') return { ...base, title: 'Pick the resolution first', detail: 'Use topic voting if players are here, or set a custom resolution and move on.', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } };
     if (loop.current.id === 'debaters') return { ...base, title: 'Build the matchup', detail: 'Choose two AI debaters, or assign one player against one AI debater.', action: { label: 'Pick debaters', attrs: 'data-toggle-host', primary: true } };
-    if (loop.current.id === 'bets') return { ...base, title: status === 'BETTING_OPEN' ? 'Give players a betting window' : 'Post odds to unlock bets', detail: status === 'BETTING_OPEN' ? 'When the room has had a chance to bet, start the debate.' : 'Odds create the fake-chip markets players can understand at a glance.', action: { label: status === 'BETTING_OPEN' ? 'Start debate' : 'Post odds', attrs: 'data-toggle-host', primary: true } };
+    if (loop.current.id === 'bets') return { ...base, title: betting.active ? 'Let the betting window run' : 'Post odds to unlock bets', detail: betting.active ? `${formatCountdown(betting.remainingMs)} left. ${bettingWindowCopy(betting)}` : 'Odds create the fake-chip markets players can understand at a glance.', action: { label: betting.active ? 'Watch betting' : 'Post odds', attrs: betting.active ? 'data-scroll-target="#bets"' : 'data-toggle-host', primary: true } };
+    if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Betting is done', detail: 'Heckle Codes are open now. Start the debate when ready.', action: { label: 'Start debate', attrs: 'data-toggle-host', primary: true } };
     if (loop.current.id === 'debate') return { ...base, title: 'The debate is live', detail: 'Monitor the stage. Human debaters will get an inline timer when it is their turn.', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"' } };
     if (loop.current.id === 'results') return { ...base, title: 'Judge is resolving the round', detail: 'Results, payouts, and the audience read will appear automatically.', action: null };
     return { ...base, title: 'Replay from the same room', detail: 'Keep the players, collapse the result, and start with a new topic.', action: { label: 'Play another round', attrs: 'data-action="resetRoom"', primary: true } };
@@ -530,7 +616,8 @@ function roleGuidanceState(room, me, isHost, loop) {
   if (loop.current.id === 'debaters') return { ...base, title: 'Matchup is next', detail: 'The topic is locked. The host is choosing who argues each side.', action: { label: 'See room', attrs: 'data-scroll-target="#room"' } };
   if (loop.current.id === 'bets') return isHumanDebater
     ? { ...base, title: 'You are debating this round', detail: 'Betting is blocked for active debaters. Watch for your typed turn during the debate.', action: null, badge: 'Bets blocked for debaters' }
-    : { ...base, title: status === 'BETTING_OPEN' ? 'Place a fake-chip bet' : 'Odds are almost ready', detail: status === 'BETTING_OPEN' ? 'Pick one market before the host starts the debate. Heckle cards unlock from the same panel.' : 'Review the matchup while the host posts odds.', action: { label: status === 'BETTING_OPEN' ? 'Go to bets' : 'Review room', attrs: status === 'BETTING_OPEN' ? 'data-scroll-target="#bets"' : 'data-scroll-target="#room"', primary: status === 'BETTING_OPEN' } };
+    : { ...base, title: betting.active ? 'Place a fake-chip bet' : 'Odds are almost ready', detail: betting.active ? `${formatCountdown(betting.remainingMs)} left. Pick one market before betting closes.` : 'Review the matchup while the host posts odds.', action: { label: betting.active ? 'Go to bets' : 'Review room', attrs: betting.active ? 'data-scroll-target="#bets"' : 'data-scroll-target="#room"', primary: betting.active } };
+  if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Heckle Codes are open', detail: 'Betting is done, so the only side action left is buying a Heckle Code before judging.', action: { label: 'Go to Heckle Codes', attrs: 'data-scroll-target="#bets"', primary: true }, badge: 'Codes unlocked' };
   if (loop.current.id === 'debate') return { ...base, title: isHumanDebater ? 'Watch for your turn' : 'React while the debate runs', detail: isHumanDebater ? 'When your timer appears, type your argument before AI fill-in takes over.' : 'Read the current turn, use jury reactions, and keep chat for table talk.', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"', primary: true } };
   if (loop.current.id === 'results') return { ...base, title: 'Judge is scoring', detail: 'Bets are closed. Results and payouts will appear when judging finishes.', action: null };
   return { ...base, title: 'Stay in the room for replay', detail: 'Review the result, invite more players, and wait for the host to start another round.', action: { label: 'Copy invite link', attrs: 'data-action="copyLink"' }, badge: 'Ready for replay' };
@@ -929,9 +1016,9 @@ function scoreCardHtml(debater, score = {}) {
 }
 
 function sportsbookHtml(room, me) {
-  const myBets = room.bets.filter((b) => b.userId === me?.id);
   const humanDebater = humanDebaterForCurrentPlayer(room, me);
-  const canBet = room.status === 'BETTING_OPEN' && !humanDebater;
+  const betting = bettingWindowState(room);
+  const canBet = room.status === 'BETTING_OPEN' && betting.active && !humanDebater && !me?.isHost;
   const unavailable = betUnavailableReason(room, humanDebater);
   if (!room.markets?.length) {
     const isHost = Boolean(state.session?.hostToken);
@@ -945,19 +1032,23 @@ function sportsbookHtml(room, me) {
       )}
       <p class="fineprint">Fake chips only. No cash value.</p>`;
   }
+  if (!betting.active) return '';
   return `
     <div class="kicker">Bets</div>
     <h3>Bets</h3>
-    <div class="bet-status ${room.status === 'BETTING_OPEN' ? 'open' : 'closed'}">${room.status === 'BETTING_OPEN' ? 'Betting open' : 'Betting locked / closed'}</div>
+    ${bettingWindowPanelHtml(betting)}
     ${unavailable ? `<p class="bet-blocked">${h(unavailable)}</p>` : ''}
     <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />
     <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small><strong>Result rule:</strong> ${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Place bet</button></article>`).join('')}</div>
-    <section class="my-bets"><h4>My bets</h4>${myBets.length ? `<table><tbody>${myBets.map((b) => `<tr><td>${h(b.marketLabel)}</td><td>${chips(b.amount)}</td><td>${h(b.status)}</td><td>${b.net === null ? '' : signedChips(b.net)}</td></tr>`).join('')}</tbody></table>` : '<p class="guided-note">Your active bets will appear here after you place one.</p>'}</section>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
 }
 
 function betUnavailableReason(room, humanDebater) {
   if (humanDebater) return `You are debating as ${humanDebater.sideLabel}. Human debaters cannot bet in their own round.`;
+  const me = currentPlayer(room);
+  if (me?.isHost) return 'Hosts guide the round. Betting is for non-host audience players.';
+  const betting = bettingWindowState(room);
+  if (betting.done) return 'Betting is done for this round.';
   if (room.status === 'BETTING_OPEN') return '';
   if (room.status === 'BETTING_LOCKED') return 'Betting is locked because the debate is ready to start.';
   if (['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) return 'Betting is closed for this round.';
@@ -969,16 +1060,31 @@ function humanDebaterForCurrentPlayer(room, me) {
 }
 
 function hecklesHtml(room, me) {
-  if (!room.markets?.length) return '';
+  if (!hecklesVisibleState(room)) return '';
   const allowed = ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(room.status);
   const pending = room.heckles.filter((x) => x.status === 'pending' || x.status === 'queued');
   return `
     <section class="heckles">
-      <h3>Heckle cards</h3>
-      <p class="muted small">Spend 25 fake chips to force the next debater to satisfy a constraint.</p>
+      <div class="kicker">Unlocked after betting</div>
+      <h3>Heckle Codes</h3>
+      <p class="muted small">Spend 25 fake chips to force the next debater to satisfy a constraint. Codes close when judging begins.</p>
       <div class="heckle-grid">${(room.heckleCards || []).map((c) => `<button data-action="submitHeckle" data-card-id="${h(c.id)}" ${allowed && (me?.bankroll || 0) >= c.cost ? '' : 'disabled'}><strong>${h(c.label)}</strong><span>${h(c.cost)} chips</span></button>`).join('')}</div>
       ${pending.length ? `<div class="pending-heckles"><div class="kicker">Pending</div>${pending.map((x) => `<span>${h(x.label)} by ${h(x.displayName)}</span>`).join('')}</div>` : ''}
     </section>`;
+}
+
+function roundActionPanelHtml(room, me) {
+  const content = `${sportsbookHtml(room, me)}${hecklesHtml(room, me)}`;
+  if (content.trim()) return content;
+  if (room.markets?.length && ['JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) {
+    return `
+      <section class="side-status">
+        <div class="kicker">Round actions</div>
+        <h3>Closed for judging</h3>
+        <p class="muted small">Side actions are closed. Watch the verdict and results on the live stage.</p>
+      </section>`;
+  }
+  return content;
 }
 
 function leaderboardHtml(room) {
@@ -1088,7 +1194,7 @@ function hostWizardHtml(room, canEdit, defaultA, defaultB, loop) {
     bets: {
       eyebrow: 'Step 3 of 4',
       title: 'Bets',
-      detail: room.status === 'BETTING_OPEN' ? 'Betting is open. Start the debate when the table is ready.' : 'Post odds so players get one clear betting panel.',
+      detail: bettingWindowState(room).active ? 'Betting is open. The debate unlocks when the timer ends or all eligible bettors act.' : 'Post odds so players get one clear betting panel.',
       body: bettingControlsHtml(room, canEdit),
     },
     debate: {
@@ -1175,12 +1281,13 @@ function debaterControlsHtml(room, canEdit, defaultA, defaultB) {
 
 function bettingControlsHtml(room, canEdit) {
   const canPost = Boolean(room.topic && room.debaters?.length === 2 && canEdit);
-  const canStart = room.status === 'BETTING_OPEN' && !room.running;
+  const betting = bettingWindowState(room);
+  const canStart = room.status === 'BETTING_OPEN' && betting.done && !room.running;
   return `
     <div class="wizard-fields">
       ${roundSetupSummaryHtml(room)}
       ${room.markets?.length
-        ? `<p class="control-help ready">Odds are posted. Players can bet from the Bets panel until you start the debate.</p><div class="button-row split-actions"><button data-scroll-target="#bets">Review bets</button><button class="primary" data-action="startDebate" ${canStart ? '' : 'disabled'}>${buttonContent('startDebate', 'Start debate')}</button></div>`
+        ? `${bettingWindowPanelHtml(betting)}<p class="control-help ${betting.done ? 'ready' : ''}">${h(betting.done ? 'Betting is done. Start the debate when ready.' : bettingWindowCopy(betting))}</p><button class="primary" data-action="startDebate" ${canStart ? '' : 'disabled'}>${buttonContent('startDebate', betting.done ? 'Start debate' : `Start unlocks in ${formatCountdown(betting.remainingMs)}`)}</button>`
         : `<button class="primary" data-action="postOdds" ${canPost ? '' : 'disabled'}>${buttonContent('postOdds', 'Post odds')}</button><p class="control-help">${h(postOddsHelp(room, canEdit))}</p>`}
     </div>`;
 }
@@ -1308,8 +1415,8 @@ function postOddsHelp(room, canEdit) {
   if (!room?.topic) return 'Choose a topic before posting odds.';
   if ((room.debaters?.length || 0) !== 2) return 'Assign both debaters before posting odds.';
   if (!canEdit) return 'Odds are locked while a round is running.';
-  if (room.markets?.length) return 'Odds are posted. Players can bet while betting is open.';
-  return 'Ready to post betting options for the room.';
+  if (room.markets?.length) return bettingWindowCopy(bettingWindowState(room));
+  return 'Ready to open a 90-second betting window for eligible audience players.';
 }
 
 function personaLabel(persona) {
@@ -1828,10 +1935,12 @@ async function runAction(action, fn) {
 
 function syncCountdownTimer() {
   const hasPending = Boolean(state.room?.pendingHumanTurn);
-  if (hasPending && !state.countdownTimer) {
+  const betting = bettingWindowState(state.room);
+  const hasBettingWindow = Boolean(betting.active);
+  if ((hasPending || hasBettingWindow) && !state.countdownTimer) {
     state.countdownTimer = setInterval(updateCountdownDisplay, 500);
   }
-  if (!hasPending && state.countdownTimer) {
+  if (!hasPending && !hasBettingWindow && state.countdownTimer) {
     clearInterval(state.countdownTimer);
     state.countdownTimer = null;
   }
@@ -1840,17 +1949,33 @@ function syncCountdownTimer() {
 
 function updateCountdownDisplay() {
   const pending = state.room?.pendingHumanTurn;
-  if (!pending) return;
-  const remaining = formatCountdown(remainingMs(pending));
-  const pct = countdownPercent(pending);
-  for (const el of document.querySelectorAll('[data-countdown]')) {
-    el.textContent = remainingMs(pending) <= 0 ? 'Time expired' : remaining;
+  if (pending) {
+    const remaining = formatCountdown(remainingMs(pending));
+    const pct = countdownPercent(pending);
+    for (const el of document.querySelectorAll('[data-countdown]')) {
+      el.textContent = remainingMs(pending) <= 0 ? 'Time expired' : remaining;
+    }
+    for (const el of document.querySelectorAll('[data-countdown-meter]')) {
+      el.style.width = `${pct}%`;
+    }
+    const textarea = document.getElementById('humanTurnText');
+    if (textarea && !textarea.value) textarea.placeholder = `${remaining} left before AI fill-in. Type your turn here.`;
   }
-  for (const el of document.querySelectorAll('[data-countdown-meter]')) {
-    el.style.width = `${pct}%`;
+
+  const betting = bettingWindowState(state.room);
+  if (betting.exists) {
+    for (const el of document.querySelectorAll('[data-betting-countdown]')) {
+      el.textContent = betting.active ? formatCountdown(betting.remainingMs) : 'Done';
+    }
+    for (const el of document.querySelectorAll('[data-betting-countdown-meter]')) {
+      el.style.width = `${bettingWindowPercent(betting)}%`;
+    }
   }
-  const textarea = document.getElementById('humanTurnText');
-  if (textarea && !textarea.value) textarea.placeholder = `${remaining} left before AI fill-in. Type your turn here.`;
+  const expiryKey = `${state.room?.id || ''}:${betting.openedAt || ''}`;
+  if (betting.expiredByClient && expiryKey && state.ui.bettingExpiryRenderKey !== expiryKey) {
+    state.ui.bettingExpiryRenderKey = expiryKey;
+    render();
+  }
 }
 
 function remainingMs(pending) {

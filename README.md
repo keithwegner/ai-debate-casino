@@ -89,6 +89,8 @@ For a live hackathon, keep the debate model fast. The judge can be upgraded late
 
 Set `DEBATE_SCRIPT=full` for the full 10-turn debate. Keep `DEBATE_SCRIPT=fast` for a shorter six-turn round with fewer sequential model calls.
 
+`BETTING_WINDOW_MS` defaults to `90000`, giving players 90 seconds after odds are posted. The host can start earlier once every eligible non-host audience player has placed a bet.
+
 ## Smoke test
 
 With the server running, verify the API configuration:

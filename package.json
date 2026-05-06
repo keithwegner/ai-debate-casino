@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node server.mjs",
     "mock": "MOCK_AI=true node server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check tests/smoke.mjs",
-    "smoke": "node tests/smoke.mjs"
+    "check": "node --check server.mjs && node --check public/app.js && node --check tests/smoke.mjs && node --check tests/render.mjs",
+    "smoke": "node tests/smoke.mjs",
+    "render-check": "node tests/render.mjs"
   },
   "engines": {
     "node": ">=20"
