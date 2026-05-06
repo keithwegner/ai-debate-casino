@@ -1078,6 +1078,7 @@ function placeBet(room, playerId, marketId, amountRaw) {
   if (!bettingWindow || bettingWindow.done) throw apiError(400, 'Betting window is closed.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
+  if (player.isHost) throw apiError(400, 'Hosts guide the round. Betting is for non-host audience players.');
   if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot place bets in their own round.');
   const market = room.markets.find((m) => m.id === marketId);
   if (!market) throw apiError(404, 'Market not found.');
