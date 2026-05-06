@@ -527,13 +527,13 @@ function roundLoopState(room, me, isHost) {
 
   if (!hasTopic) {
     return isHost
-      ? loopState({ role, steps, title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom resolution.', tone: 'setup', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } })
-      : loopState({ role, steps, title: room.topicVote?.open ? 'Suggest or vote on a topic' : 'Waiting for the topic', detail: room.topicVote?.open ? 'Add one resolution or vote for the one you want debated.' : 'The host is setting up the round.', tone: 'setup', action: { label: 'Go to topic', attrs: 'data-scroll-target="#live"' } });
+      ? loopState({ role, steps, title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom topic.', tone: 'setup', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } })
+      : loopState({ role, steps, title: room.topicVote?.open ? 'Suggest or vote on a topic' : 'Waiting for the topic', detail: room.topicVote?.open ? 'Add one topic or vote for the one you want debated.' : 'The host is setting up the round.', tone: 'setup', action: { label: 'Go to topic', attrs: 'data-scroll-target="#live"' } });
   }
   if (!hasDebaters) {
     return isHost
       ? loopState({ role, steps, title: 'Assign debaters', detail: 'Pick two AI debaters, or put one lobby player against an AI debater.', tone: 'setup', action: { label: 'Pick debaters', attrs: 'data-toggle-host', primary: true } })
-      : loopState({ role, steps, title: 'Debaters are being assigned', detail: 'The resolution is set. The matchup is next.', tone: 'setup' });
+      : loopState({ role, steps, title: 'Debaters are being assigned', detail: 'The topic is set. The matchup is next.', tone: 'setup' });
   }
   if (!hasMarkets) {
     return isHost
@@ -603,7 +603,7 @@ function roleGuidanceState(room, me, isHost, loop) {
     : { role: me?.id ? 'Player role' : 'Observer role', badge: me?.id ? 'You can act when unlocked' : 'Join to play' };
 
   if (isHost) {
-    if (loop.current.id === 'topic') return { ...base, title: 'Pick the resolution first', detail: 'Use topic voting if players are here, or set a custom resolution and move on.', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } };
+    if (loop.current.id === 'topic') return { ...base, title: 'Pick the topic first', detail: 'Use topic voting if players are here, or set a custom topic and move on.', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } };
     if (loop.current.id === 'debaters') return { ...base, title: 'Build the matchup', detail: 'Choose two AI debaters, or assign one player against one AI debater.', action: { label: 'Pick debaters', attrs: 'data-toggle-host', primary: true } };
     if (loop.current.id === 'bets') return { ...base, title: betting.active ? 'Let the betting window run' : 'Post odds to unlock bets', detail: betting.active ? `${formatCountdown(betting.remainingMs)} left. ${bettingWindowCopy(betting)}` : 'Odds create the fake-chip markets players can understand at a glance.', action: { label: betting.active ? 'Watch betting' : 'Post odds', attrs: betting.active ? 'data-scroll-target="#bets"' : 'data-toggle-host', primary: true } };
     if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Betting is done', detail: 'Heckle Codes are open now. Start the debate when ready.', action: { label: 'Start debate', attrs: 'data-toggle-host', primary: true } };
@@ -612,7 +612,7 @@ function roleGuidanceState(room, me, isHost, loop) {
     return { ...base, title: 'Replay from the same room', detail: 'Keep the players, collapse the result, and start with a new topic.', action: { label: 'Play another round', attrs: 'data-action="resetRoom"', primary: true } };
   }
 
-  if (loop.current.id === 'topic') return { ...base, title: room.topicVote?.open ? 'Help choose the topic' : 'Wait for the host to choose', detail: room.topicVote?.open ? 'Suggest one resolution, vote for one option, then watch for the lock.' : 'The host is preparing the first step.', action: { label: 'Go to topic vote', attrs: 'data-scroll-target="#live"', primary: true } };
+  if (loop.current.id === 'topic') return { ...base, title: room.topicVote?.open ? 'Help choose the topic' : 'Wait for the host to choose', detail: room.topicVote?.open ? 'Suggest one topic, vote for one option, then watch for the lock.' : 'The host is preparing the first step.', action: { label: 'Go to topic vote', attrs: 'data-scroll-target="#live"', primary: true } };
   if (loop.current.id === 'debaters') return { ...base, title: 'Matchup is next', detail: 'The topic is locked. The host is choosing who argues each side.', action: { label: 'See room', attrs: 'data-scroll-target="#room"' } };
   if (loop.current.id === 'bets') return isHumanDebater
     ? { ...base, title: 'You are debating this round', detail: 'Betting is blocked for active debaters. Watch for your typed turn during the debate.', action: null, badge: 'Bets blocked for debaters' }
@@ -627,8 +627,8 @@ function topicHtml(room, me) {
   if (!room.topic) return topicVoteHtml(room, me);
   return `
     <div class="topic-card">
-      <div class="kicker">Resolution</div>
-      <h2>${h(room.topic.resolution)}</h2>
+      <div class="kicker">Topic</div>
+      <h2>${h(topicDisplayText(room.topic.resolution))}</h2>
       <div class="topic-meta"><span>${h(room.topic.category)}</span><span>Comedy ${h(room.topic.comedyPotential)}/10</span><span>${h(room.topic.safetyRating)}</span></div>
       ${topicVoteResultHtml(room.topic.voteResult)}
     </div>`;
@@ -643,20 +643,20 @@ function topicVoteHtml(room, me) {
   return `
     <section class="topic-vote panel inset" aria-label="Topic vote">
       <div class="topic-vote-head">
-        <div><div class="kicker">Topic vote</div><h2>${topics.length ? 'Choose the resolution' : 'No resolution yet'}</h2></div>
+        <div><div class="kicker">Topic vote</div><h2>${topics.length ? 'Choose the topic' : 'No topic yet'}</h2></div>
         <div class="topic-vote-count">${h(room.topicVote?.totalVotes || 0)} votes</div>
       </div>
       <form id="topicSuggestionForm" class="topic-suggestion">
         <label for="topicSuggestion">Suggest a topic</label>
         <div class="topic-suggestion-row">
-          <textarea id="topicSuggestion" rows="2" maxlength="320" placeholder="Resolved: The office microwave deserves its own passport." ${canSuggest ? '' : 'disabled'}>${h(state.ui.topicSuggestionDraft)}</textarea>
+          <textarea id="topicSuggestion" rows="2" maxlength="320" placeholder="The office microwave deserves its own passport." ${canSuggest ? '' : 'disabled'}>${h(state.ui.topicSuggestionDraft)}</textarea>
           <button type="submit" class="primary" ${canSuggest ? '' : 'disabled'}>${buttonContent('submitTopicSuggestion', submission ? 'Suggested' : 'Submit')}</button>
         </div>
       </form>
       <div class="topic-vote-list">
         ${topics.length ? topics.map((topic) => topicVoteCardHtml(topic, room, me, canVote)).join('') : guidedEmptyHtml(
           isHost ? 'Generate topic candidates' : 'Waiting for topic options',
-          isHost ? 'Start with generated candidates or enter a custom resolution from host setup.' : 'The host is preparing topic options. You can suggest one while voting is open.',
+          isHost ? 'Start with generated candidates or enter a custom topic from host setup.' : 'The host is preparing topic options. You can suggest one while voting is open.',
           isHost ? '<button type="button" class="primary" data-toggle-host>Open host setup</button>' : ''
         )}
       </div>
@@ -675,7 +675,7 @@ function topicVoteCardHtml(topic, room, me, canVote) {
   return `
     <article class="topic-vote-card ${leading ? 'leading' : ''} ${voted ? 'voted' : ''}">
       <div class="topic-vote-card-head"><span>${h(source)}</span>${leading ? '<strong>Leading</strong>' : ''}</div>
-      <h3>${h(topic.resolution)}</h3>
+      <h3>${h(topicDisplayText(topic.resolution))}</h3>
       <div class="topic-meta"><span>${h(topic.category)}</span><span>Comedy ${h(topic.comedyPotential)}/10</span><span>${h(topic.safetyRating)}</span></div>
       <div class="topic-vote-actions">
         <span>${h(count)} ${count === 1 ? 'vote' : 'votes'}</span>
@@ -1182,7 +1182,7 @@ function hostWizardHtml(room, canEdit, defaultA, defaultB, loop) {
     topic: {
       eyebrow: 'Step 1 of 4',
       title: 'Topic',
-      detail: 'Choose the resolution everyone can understand before any other setup appears.',
+      detail: 'Choose the topic everyone can understand before any other setup appears.',
       body: topicControlsHtml(room, canEdit),
     },
     debaters: {
@@ -1243,11 +1243,11 @@ function topicControlsHtml(room, canEdit) {
         <button class="primary" data-action="generateTopics" ${canControl ? '' : 'disabled'}>Generate topic candidates</button>
         <button data-action="closeTopicVote" ${canControl && hasCandidates ? '' : 'disabled'}>Lock top vote</button>
       </div>
-      <label>Custom resolution</label>
-      <input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canControl ? '' : 'disabled'} />
+      <label>Custom topic</label>
+      <input id="customTopic" placeholder="The office microwave is a sovereign nation." ${canControl ? '' : 'disabled'} />
       <button data-action="setCustomTopic" ${canControl ? '' : 'disabled'}>Use custom topic</button>
       <p class="control-help">${h(topicControlHelp(room, canEdit))}</p>
-      <div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · ${h(topicVoteCount(room, t.id))} votes</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canControl ? '' : 'disabled'}>Override & lock</button></article>`).join('')}</div>
+      <div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(topicDisplayText(t.resolution))}</strong><div class="muted">${h(t.category)} · ${h(topicVoteCount(room, t.id))} votes</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canControl ? '' : 'disabled'}>Override & lock</button></article>`).join('')}</div>
     </div>`;
 }
 
@@ -1255,7 +1255,7 @@ function topicControlHelp(room, canEdit) {
   if (!canEdit) return 'Topic controls lock while a debate or judging is active.';
   if (room.topic) return 'Topic is locked for this round. Play another round to choose a new one.';
   if ((room.topics || []).length) return 'Players can vote now. Lock the top vote or override with a clear host choice.';
-  return 'Generate options, let players suggest one, or type the exact resolution yourself.';
+  return 'Generate options, let players suggest one, or type the exact topic yourself.';
 }
 
 function debaterControlsHtml(room, canEdit, defaultA, defaultB) {
@@ -1320,7 +1320,7 @@ function replayControlsHtml(room) {
 }
 
 function roundSetupSummaryHtml(room) {
-  const topic = room.topic?.resolution || 'No topic yet';
+  const topic = topicDisplayText(room.topic?.resolution) || 'No topic yet';
   const debaters = room.debaters?.length === 2 ? room.debaters.map((debater) => debater.displayName).join(' vs ') : 'Debaters not assigned';
   return `<div class="round-setup-summary"><div><strong>Topic</strong><span>${h(topic)}</span></div><div><strong>Matchup</strong><span>${h(debaters)}</span></div></div>`;
 }
@@ -1997,6 +1997,7 @@ function formatCountdown(ms) {
 }
 
 function currentPlayer(room) { return room.players.find((p) => p.id === state.session?.playerId) || room.players[0]; }
+function topicDisplayText(value) { return String(value || '').replace(/^Resolved:\s*/i, '').trim(); }
 function statusClass(status) { if (status === 'BETTING_OPEN') return 'green'; if (['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(status)) return 'gold'; if (status === 'RESULTS') return 'blue'; if (status === 'ERROR') return 'red'; return 'gray'; }
 function chips(value) { return `${Number(value || 0).toLocaleString()} chips`; }
 function signedChips(value) { const n = Number(value || 0); return `${n >= 0 ? '+' : ''}${n.toLocaleString()}`; }

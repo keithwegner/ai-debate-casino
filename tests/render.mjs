@@ -107,6 +107,9 @@ function renderAsHost(room) {
 const activeRoom = makeRoom();
 const activeHtml = renderAsPlayer(activeRoom);
 assert.equal(bettingWindowState(activeRoom).active, true);
+assert.match(activeHtml, /Topic/);
+assert.doesNotMatch(activeHtml, /Resolution/);
+assert.doesNotMatch(activeHtml, /Resolved:/);
 assert.match(activeHtml, /Bet amount/);
 assert.match(activeHtml, /Place bet/);
 assert.match(activeHtml, /Betting window/);

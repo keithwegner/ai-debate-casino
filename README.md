@@ -59,7 +59,7 @@ MOCK_AI=true node server.mjs
 ## Recommended first-round flow
 
 1. Host creates a room and shares the room code or invite link.
-2. Players join, suggest topics, and vote while the host picks the resolution.
+2. Players join, suggest topics, and vote while the host picks the topic.
 3. Host assigns debaters, posts odds, and gives players a short betting window.
 4. Host starts the debate; players watch, chat, buy heckle cards, and react as the audience jury.
 5. Results post automatically; host clicks **Play another round** to replay with the same room.
