@@ -348,15 +348,16 @@ function roomHtml(room) {
 
 function mobileSectionNavHtml(room, isHost, loop) {
   const active = activeNavSection();
-  const betsLabel = hecklesVisibleState(room) ? 'Heckle Cards' : 'Bets';
+  const betsLabel = hecklesVisibleState(room) ? 'Cards' : 'Bets';
+  const betsAriaLabel = hecklesVisibleState(room) ? 'Heckle Cards' : 'Bets';
   const items = [
-    ['live', 'Live', '#live'],
-    ['bets', betsLabel, '#bets'],
-    ['room', 'Room', '#room'],
+    { id: 'live', label: 'Live', href: '#live', ariaLabel: 'Live' },
+    { id: 'bets', label: betsLabel, href: '#bets', ariaLabel: betsAriaLabel },
+    { id: 'room', label: 'Room', href: '#room', ariaLabel: 'Room' },
   ];
   return `
     <nav class="mobile-section-nav ${isHost ? 'has-host' : 'player-only'}" aria-label="Room sections">
-      ${items.map(([id, label, href]) => `<a class="${active === id ? 'active' : ''}" href="${href}"><span>${h(label)}</span>${navBadgeHtml(id, loop)}</a>`).join('')}
+      ${items.map(({ id, label, href, ariaLabel }) => `<a class="${active === id ? 'active' : ''}" href="${href}" aria-label="${h(ariaLabel)}"><span>${h(label)}</span>${navBadgeHtml(id, loop)}</a>`).join('')}
       <button type="button" class="${active === 'chat' ? 'active' : ''}" data-toggle-chat><span>Chat</span>${navBadgeHtml('chat', loop)}</button>
       ${isHost ? `<button type="button" class="${active === 'host' ? 'active' : ''}" data-toggle-host><span>Host</span>${navBadgeHtml('host', loop)}</button>` : ''}
     </nav>`;
@@ -485,11 +486,24 @@ function roundLoopHtml(loop) {
         <h2>${h(loop.title)}</h2>
         <p>${h(loop.detail)}</p>
       </div>
+      ${roundLoopMobileProgressHtml(loop)}
       <ol class="round-loop-steps">
         ${loop.steps.map((step, index) => `<li class="round-loop-step ${step.state}" ${step.state === 'current' ? 'aria-current="step"' : ''}><span class="round-step-index">${index + 1}</span><span>${h(step.label)}</span><small>${h(step.status)}</small></li>`).join('')}
       </ol>
       ${loop.action ? `<button type="button" class="round-loop-action ${loop.action.primary ? 'primary' : ''}" ${loop.action.attrs || ''}>${h(loop.action.label)}</button>` : ''}
     </section>`;
+}
+
+function roundLoopMobileProgressHtml(loop) {
+  const currentIndex = Math.max(0, loop.steps.findIndex((step) => step.state === 'current'));
+  const completed = loop.steps.filter((step) => step.state === 'complete').map((step) => step.label);
+  const completedText = completed.length ? `Done: ${completed.join(', ')}` : 'Nothing complete yet';
+  return `
+    <div class="round-loop-mobile-progress" aria-label="Round progress">
+      <span>Step ${currentIndex + 1} of ${loop.steps.length}</span>
+      <strong>${h(loop.current?.label || loop.steps[currentIndex]?.label || 'Setup')}</strong>
+      <small>${h(completedText)}</small>
+    </div>`;
 }
 
 function roundLoopState(room, me, isHost) {
@@ -581,6 +595,7 @@ function loopStep(id, label, currentId, complete, status) {
 
 function roleGuidanceHtml(room, me, isHost, loop = roundLoopState(room, me, isHost)) {
   const guidance = roleGuidanceState(room, me, isHost, loop);
+  const showAction = guidance.action && !sameGuidanceAction(loop.action, guidance.action);
   return `
     <section class="role-guidance ${isHost ? 'host-role' : 'player-role'}" aria-label="${h(guidance.role)} guidance">
       <div>
@@ -589,10 +604,19 @@ function roleGuidanceHtml(room, me, isHost, loop = roundLoopState(room, me, isHo
         <p>${h(guidance.detail)}</p>
       </div>
       <div class="role-guidance-actions">
-        ${guidance.action ? `<button type="button" class="${guidance.action.primary ? 'primary' : ''}" ${guidance.action.attrs || ''}>${h(guidance.action.label)}</button>` : ''}
+        ${showAction ? `<button type="button" class="${guidance.action.primary ? 'primary' : ''}" ${guidance.action.attrs || ''}>${h(guidance.action.label)}</button>` : ''}
         <span>${h(guidance.badge)}</span>
       </div>
     </section>`;
+}
+
+function sameGuidanceAction(loopAction, guidanceAction) {
+  if (!loopAction || !guidanceAction) return false;
+  return loopAction.label === guidanceAction.label && normalizeActionAttrs(loopAction.attrs) === normalizeActionAttrs(guidanceAction.attrs);
+}
+
+function normalizeActionAttrs(value = '') {
+  return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
 function roleGuidanceState(room, me, isHost, loop) {
@@ -1303,9 +1327,9 @@ function debateControlsHtml(room) {
   if (room.status === 'BETTING_OPEN' && betting.done && !room.running) {
     return `
     <div class="wizard-fields">
-      ${roundSetupSummaryHtml(room)}
       <p class="control-help ready">${h(bettingWindowCopy(betting))}</p>
       <button class="primary" data-action="startDebate">${buttonContent('startDebate', 'Start debate')}</button>
+      ${roundSetupSummaryHtml(room)}
     </div>`;
   }
   return `
