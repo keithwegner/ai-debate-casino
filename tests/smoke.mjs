@@ -122,11 +122,12 @@ async function submitHumanTurnsUntilResults(roomId, playerId, textFactory = null
 async function configureRound(roomId, hostToken, personaAId = 'formal_logician', personaBId = 'product_manager') {
   const current = await api(`/api/rooms/${roomId}`);
   if (!current.room.topic) {
-    await api(`/api/rooms/${roomId}/topic`, {
+    const topicLocked = await api(`/api/rooms/${roomId}/topic`, {
       method: 'POST',
       headers: { 'X-Host-Token': hostToken },
       body: { customTopic: 'Resolved: The office microwave should get its own office.' },
     });
+    if (topicLocked.room.debaters.length) throw new Error('Topic lock should not auto-assign debaters.');
   }
   const assigned = await api(`/api/rooms/${roomId}/personas`, {
     method: 'POST',
@@ -274,6 +275,7 @@ await expectApiError(`/api/rooms/${roomId}/topics/close`, { method: 'POST', body
 const closedVote = await api(`/api/rooms/${roomId}/topics/close`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
 if (closedVote.room.topic?.id !== submittedTopic.topic.id) throw new Error('Closing topic vote did not lock the leading topic.');
 if (closedVote.room.topic.voteResult?.mode !== 'top_vote' || closedVote.room.topic.voteResult.votes !== 2) throw new Error('Locked topic did not preserve top-vote result metadata.');
+if (closedVote.room.debaters.length) throw new Error('Closing topic vote should leave debater assignment to the host.');
 await expectApiError(`/api/rooms/${roomId}/topics/vote`, { method: 'POST', body: { playerId: created.playerId, topicId: submittedTopic.topic.id } }, 409);
 const resetVoteRoom = await api(`/api/rooms/${roomId}/reset`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { keepBankroll: true } });
 if (resetVoteRoom.room.topic || resetVoteRoom.room.topics.length || resetVoteRoom.room.topicVote.votes.length || resetVoteRoom.room.topicVote.submissions.length) throw new Error('Room reset did not clear topic voting state.');
@@ -286,11 +288,13 @@ await api(`/api/rooms/${overrideRoom.room.id}/topics/vote`, { method: 'POST', bo
 const overrideLocked = await api(`/api/rooms/${overrideRoom.room.id}/topic`, { method: 'POST', headers: { 'X-Host-Token': overrideRoom.hostToken }, body: { topicId: overrideTarget.id } });
 if (overrideLocked.room.topic?.id !== overrideTarget.id) throw new Error('Host override did not lock the selected non-leader topic.');
 if (overrideLocked.room.topic.voteResult?.mode !== 'host_override') throw new Error('Host override did not record override vote result metadata.');
+if (overrideLocked.room.debaters.length) throw new Error('Host topic override should not auto-assign debaters.');
 
 const noVoteRoom = await api('/api/rooms', { method: 'POST', body: { displayName: 'No Vote Host' } });
 const noVoteGenerated = await api(`/api/rooms/${noVoteRoom.room.id}/topics/generate`, { method: 'POST', headers: { 'X-Host-Token': noVoteRoom.hostToken }, body: {} });
 const noVoteClosed = await api(`/api/rooms/${noVoteRoom.room.id}/topics/close`, { method: 'POST', headers: { 'X-Host-Token': noVoteRoom.hostToken }, body: {} });
 if (noVoteClosed.room.topic?.id !== noVoteGenerated.room.topics[0].id) throw new Error('No-vote close did not lock the first candidate.');
+if (noVoteClosed.room.debaters.length) throw new Error('No-vote topic close should not auto-assign debaters.');
 
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', body: { name: 'Madame Tax Volcano', description: 'A mean, rude accountant who calls every weak claim bullshit and treats the debate like an audit with fireworks.' } }, 403);
 await expectApiError(`/api/rooms/${roomId}/personas/custom`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { name: '', description: '' } }, 400);
@@ -311,11 +315,12 @@ await expectApiError(`/api/rooms/${roomId}/topic`, {
   headers: { 'X-Host-Token': hostToken },
   body: { customTopic: 'Resolved: how to commit crimes should be a team-building workshop.' },
 }, 400);
-await api(`/api/rooms/${roomId}/topic`, {
+const customTopicLocked = await api(`/api/rooms/${roomId}/topic`, {
   method: 'POST',
   headers: { 'X-Host-Token': hostToken },
   body: { customTopic: 'Resolved: The office microwave is a bullshit little tyrant.' },
 });
+if (customTopicLocked.room.debaters.length) throw new Error('Custom topic lock should not auto-assign debaters.');
 const prematureAssign = await api(`/api/rooms/${roomId}/personas`, {
   method: 'POST',
   headers: { 'X-Host-Token': hostToken },

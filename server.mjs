@@ -893,7 +893,6 @@ function lockTopic(room, topic, options = {}) {
   room.verdict = null;
   room.settlements = null;
   room.heckles = room.heckles.filter((h) => h.status === 'spent');
-  assignDefaultDebaters(room);
   room.error = null;
   setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
   pushComment(room, `Resolution locked: ${room.topic.resolution}`);
