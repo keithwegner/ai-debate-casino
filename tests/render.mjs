@@ -104,6 +104,14 @@ function renderAsHost(room) {
   return roomHtml(room);
 }
 
+function sectionHtml(html, className) {
+  const start = html.indexOf(`<section class="${className}`);
+  assert.notEqual(start, -1, `Expected section ${className}`);
+  const end = html.indexOf('</section>', start);
+  assert.notEqual(end, -1, `Expected section ${className} to close`);
+  return html.slice(start, end);
+}
+
 const activeRoom = makeRoom();
 const activeHtml = renderAsPlayer(activeRoom);
 assert.equal(bettingWindowState(activeRoom).active, true);
@@ -114,6 +122,9 @@ assert.match(activeHtml, /Bet amount/);
 assert.match(activeHtml, /Place bet/);
 assert.match(activeHtml, /Betting window/);
 assert.doesNotMatch(activeHtml, /Heckle Cards/);
+assert.match(activeHtml, /round-loop-mobile-progress/);
+assert.match(activeHtml, /Step 3 of 6/);
+assert.match(activeHtml, /aria-label="Bets"><span>Bets<\/span>/);
 
 const hostActiveHtml = renderAsHost(activeRoom);
 assert.match(hostActiveHtml, /Hosts guide the round/);
@@ -131,12 +142,17 @@ assert.doesNotMatch(doneHtml, /Place bet/);
 assert.doesNotMatch(doneHtml, /My bets/);
 assert.match(doneHtml, /aria-label="Heckle Cards"/);
 assert.match(doneHtml, />Heckle Cards</);
+assert.match(doneHtml, /aria-label="Heckle Cards"><span>Cards<\/span>/);
+assert.doesNotMatch(doneHtml, /aria-label="Heckle Cards"><span>Heckle Cards<\/span>/);
+assert.match(doneHtml, /Step 4 of 6/);
+assert.equal((doneHtml.match(/Go to Heckle Cards/g) || []).length, 1);
 assert.doesNotMatch(doneHtml, /Bets and heckles/);
 assert.doesNotMatch(doneHtml, /<h3>Bets<\/h3>/);
 
 const hostDoneHtml = renderAsHost(doneRoom);
 assert.match(hostDoneHtml, /Start debate/);
 assert.match(hostDoneHtml, /data-action="startDebate"/);
+assert.doesNotMatch(sectionHtml(hostDoneHtml, 'role-guidance host-role'), /data-action="startDebate"/);
 assert.doesNotMatch(hostDoneHtml, /Start unlocks in/);
 assert.doesNotMatch(hostDoneHtml, /Watch live debate/);
 assert.doesNotMatch(hostDoneHtml, /Debate is queued/);
