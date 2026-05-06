@@ -101,8 +101,6 @@ const JURY_REACTIONS = [
   { id: 'weak_argument', label: 'Weak argument', sentiment: 'negative' },
 ];
 
-const DEMO_NAMES = ['Marge Odds', 'Chip Skylark', 'The House', 'Parlay Carl', 'Nancy Spread', 'Bankroll Bob', 'Viggy Stardust', 'Wagertron', 'Degen Dolores', 'Rita Risk'];
-
 function loadDotEnv(file) {
   if (!fs.existsSync(file)) return;
   for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
@@ -666,13 +664,6 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { room: publicRoom(room) });
     }
 
-    if (method === 'POST' && action === 'demo-fill') {
-      requireHost(req, room);
-      if (room.status !== 'BETTING_OPEN') throw apiError(400, 'Open betting first.');
-      addDemoAudienceAndBets(room);
-      return sendJson(res, 200, { room: publicRoom(room) });
-    }
-
     if (method === 'POST' && action === 'bets') {
       const body = await readJson(req);
       const bet = placeBet(room, body.playerId, body.marketId, body.amount);
@@ -711,20 +702,6 @@ async function handleApi(req, res, url) {
 
     if (method === 'POST' && action === 'start') {
       requireHost(req, room);
-      await ensureDebateReady(room);
-      startDebate(room);
-      return sendJson(res, 202, { started: true, room: publicRoom(room) });
-    }
-
-    if (method === 'POST' && action === 'quick-demo') {
-      requireHost(req, room);
-      if (!room.topic) {
-        if (!room.topics.length) room.topics = (await safeGenerateTopics('Maximize comedy and demo clarity.')).map((t, i) => normalizeTopic({ ...t, source: 'host', order: i }, i));
-        lockTopic(room, topicVoteLeader(room) || room.topics[0] || normalizeTopic(SEED_TOPICS[0]), { mode: room.topicVotes?.length ? 'top_vote' : 'demo' });
-      }
-      if (room.debaters.length !== 2) assignDefaultDebaters(room);
-      if (!room.markets.length) await postOdds(room);
-      if (!room.bets.length) addDemoAudienceAndBets(room);
       await ensureDebateReady(room);
       startDebate(room);
       return sendJson(res, 202, { started: true, room: publicRoom(room) });
@@ -844,7 +821,7 @@ async function submitTopicCandidate(room, playerId, rawText) {
   assertTopicVoteOpen(room);
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(400, 'Player not found.');
-  if (player.isBot) throw apiError(400, 'Demo players cannot suggest topics.');
+  if (player.isBot) throw apiError(400, 'Automated players cannot suggest topics.');
   if ((room.topicSubmissions || []).some((submission) => submission.playerId === player.id)) throw apiError(400, 'You already suggested a topic this round.');
   const moderation = await safeNormalizeCustomTopic(rawText);
   if (moderation.decision === 'reject') {
@@ -878,7 +855,7 @@ function voteForTopic(room, playerId, topicId) {
   assertTopicVoteOpen(room);
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(400, 'Player not found.');
-  if (player.isBot) throw apiError(400, 'Demo players cannot vote on topics.');
+  if (player.isBot) throw apiError(400, 'Automated players cannot vote on topics.');
   const topic = (room.topics || []).find((candidate) => candidate.id === topicId);
   if (!topic) throw apiError(400, 'Topic candidate not found.');
   const existingIndex = (room.topicVotes || []).findIndex((vote) => vote.playerId === player.id);
@@ -1057,7 +1034,7 @@ function submitHeckle(room, playerId, cardId) {
 function addChatMessage(room, playerId, rawText) {
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(400, 'Player not found.');
-  if (player.isBot) throw apiError(400, 'Demo players cannot send chat messages.');
+  if (player.isBot) throw apiError(400, 'Automated players cannot send chat messages.');
   const text = validateChatText(rawText);
   const message = {
     id: id('chat_'),
@@ -1096,7 +1073,7 @@ function submitJuryReaction(room, playerId, turnId, reactionId) {
   if (!['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) throw apiError(400, 'Jury reactions open once the debate starts.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
-  if (player.isBot) throw apiError(400, 'Demo players cannot sit on the jury.');
+  if (player.isBot) throw apiError(400, 'Automated players cannot sit on the jury.');
   if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot sit on the jury in their own round.');
   const turn = juryTurnById(room, turnId);
   if (!turn) throw apiError(404, 'Jury target turn not found.');
@@ -1200,22 +1177,6 @@ function audienceJuryVerdict(room, winnerDebaterId, generatedSummary = '') {
     reactionCount: total,
     summary: cleanRichText(generatedSummary, 320) || fallbackSummary,
   };
-}
-
-function addDemoAudienceAndBets(room) {
-  for (const name of DEMO_NAMES) {
-    if (room.players.length >= 12) break;
-    if (!room.players.some((p) => p.displayName === name)) room.players.push(createPlayer(name, false, true));
-  }
-  const markets = room.markets.filter((m) => m.status === 'open');
-  for (const player of room.players.filter((p) => p.isBot)) {
-    if (room.bets.some((b) => b.userId === player.id)) continue;
-    const market = markets[Math.floor(Math.random() * markets.length)];
-    const amount = [25, 50, 75, 100, 150, 200][Math.floor(Math.random() * 6)];
-    try { placeBet(room, player.id, market.id, Math.min(amount, player.bankroll)); } catch { /* ignore */ }
-  }
-  pushComment(room, 'Demo audience filled the room and splashed fake chips around.');
-  touch(room);
 }
 
 function startDebate(room) {

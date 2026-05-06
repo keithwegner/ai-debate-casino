@@ -17,7 +17,6 @@ The host creates a room, chooses a ridiculous debate proposition, lets the app p
 - Player topic suggestions and topic voting
 - Persona assignment
 - Fake-chip betting markets
-- Demo audience and demo bot bets
 - Audience heckle cards that influence the next debater turn
 - Audience Jury Mode with live reaction tokens, momentum, and judge comparison
 - Room chat for human players
@@ -49,7 +48,7 @@ curl http://localhost:8787/api/health
 curl -X POST http://localhost:8787/api/openai-smoke
 ```
 
-`/api/openai-smoke` makes a tiny GPT-5.5 structured-output request when an API key is configured. If the key is missing or still set to the placeholder, the app stays in mock mode so the demo still runs.
+`/api/openai-smoke` makes a tiny GPT-5.5 structured-output request when an API key is configured. If the key is missing or still set to the placeholder, the app stays in mock mode so local testing can run without token usage.
 
 ## Run without token usage
 
@@ -57,13 +56,15 @@ curl -X POST http://localhost:8787/api/openai-smoke
 MOCK_AI=true node server.mjs
 ```
 
-## Recommended hackathon demo flow
+## Recommended first-round flow
 
-1. Create a room.
-2. Click **One-click demo round**, or use the host console to choose a topic, assign debaters, and post odds.
-3. Watch the app add demo players, place bot bets, run the debate, judge it, settle the bets, and update the leaderboard.
+1. Host creates a room and shares the room code or invite link.
+2. Players join, suggest topics, and vote while the host picks the resolution.
+3. Host assigns debaters, posts odds, and gives players a short betting window.
+4. Host starts the debate; players watch, chat, buy heckle cards, and react as the audience jury.
+5. Results post automatically; host clicks **Play another round** to replay with the same room.
 
-For a more interactive demo, have audience members join by room code, suggest and vote on topics, place fake-chip bets, and buy heckle cards while the debate is running.
+The visible round loop is always: Topic → Debaters → Bets → Debate → Results → Replay.
 
 ## Model routing
 
@@ -142,7 +143,7 @@ When `SITE_ACCESS_CODE` is set, the browser shows an invite-code screen before a
 - Active debate generation and human-turn timers do not resume across restarts; interrupted rooms must be reset.
 - Host token is stored in browser local storage; this is not production authentication.
 - Fake chips only. No real-money betting, no prizes, no cash value.
-- AI moderation is demo-grade, not production-grade.
+- AI moderation is lightweight and not a production-grade trust-and-safety system.
 - The invite code is a simple shared gate, not user accounts or role-based authentication.
 
 ## Good next upgrades
