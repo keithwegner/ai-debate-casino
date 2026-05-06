@@ -2968,6 +2968,70 @@ textarea:focus {
   grid-template-columns: 1fr !important;
 }
 
+.betting-window {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 0.85rem;
+  padding: 0.78rem;
+  border: 1px solid rgba(13, 141, 98, 0.2);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f1fbf5, #fffefb);
+}
+
+.betting-window.done {
+  border-color: rgba(47, 111, 167, 0.22);
+  background: linear-gradient(180deg, #eef6fb, #fffefb);
+}
+
+.betting-window-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.betting-window h4,
+.betting-window p {
+  margin: 0;
+}
+
+.betting-window p,
+.betting-window small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.betting-window strong {
+  color: var(--green);
+  font-size: 1.25rem;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.betting-window.done strong {
+  color: var(--blue);
+}
+
+.bets-section.betting-done {
+  border-color: rgba(47, 111, 167, 0.24) !important;
+  box-shadow: 0 12px 32px rgba(47, 111, 167, 0.08) !important;
+}
+
+.bets-section.heckles-only {
+  background: linear-gradient(180deg, rgba(255, 250, 240, 0.98), rgba(239, 246, 251, 0.92)) !important;
+}
+
+.side-status {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.3rem 0;
+}
+
+.side-status h3,
+.side-status p {
+  margin: 0;
+}
+
 .turn {
   border-left: 4px solid var(--blue) !important;
   border-radius: 10px !important;

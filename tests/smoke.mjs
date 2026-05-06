@@ -70,6 +70,10 @@ async function waitForResults(roomId) {
   throw new Error(`Room ${roomId} did not reach RESULTS in time.`);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function waitForStreamingTurn(roomId) {
   for (let i = 0; i < 120; i++) {
     const { room } = await api(`/api/rooms/${roomId}`);
@@ -136,23 +140,48 @@ async function configureRound(roomId, hostToken, personaAId = 'formal_logician',
   });
   if (assigned.room.debaters[0]?.personaId !== personaAId) throw new Error(`Debater A was not assigned to ${personaAId}.`);
   if (assigned.room.debaters[1]?.personaId !== personaBId) throw new Error(`Debater B was not assigned to ${personaBId}.`);
+  if (eligibleBettorsFromRoom(assigned.room).length < 3) await joinAudience(roomId);
   const odds = await api(`/api/rooms/${roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
-  await seedAudienceBets(roomId, odds.room.markets);
+  const eligible = eligibleBettorsFromRoom(odds.room);
+  if (odds.room.bettingWindow?.durationMs !== health.bettingWindowMs) throw new Error('Betting window duration did not match health payload.');
+  if (odds.room.bettingWindow?.done) throw new Error('Betting window closed before eligible bettors acted.');
+  if (odds.room.bettingWindow?.eligibleCount !== eligible.length) throw new Error('Betting window eligible count did not match audience.');
+  await expectApiError(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} }, 400);
+  await expectApiError(`/api/rooms/${roomId}/heckles`, { method: 'POST', body: { playerId: eligible[0].id, cardId: 'pirate_analogy' } }, 400);
+  await placeAudienceBets(roomId, odds.room.markets, eligible);
+  const afterBets = await api(`/api/rooms/${roomId}`);
+  if (!afterBets.room.bettingWindow?.done || afterBets.room.bettingWindow.doneReason !== 'all_bettors_ready') throw new Error('All eligible bettors did not close the betting window.');
+  await expectApiError(`/api/rooms/${roomId}/bets`, { method: 'POST', body: { playerId: eligible[0].id, marketId: odds.room.markets[0].id, amount: 10 } }, 400);
+  const heckle = await api(`/api/rooms/${roomId}/heckles`, { method: 'POST', body: { playerId: eligible[0].id, cardId: 'pirate_analogy' } });
+  if (!heckle.room.heckles.some((item) => item.cardId === 'pirate_analogy')) throw new Error('Heckle Code was not accepted after betting closed.');
 }
 
-async function seedAudienceBets(roomId, markets) {
-  if (!markets?.length) throw new Error('Cannot seed smoke bets before odds are posted.');
+function eligibleBettorsFromRoom(room) {
+  const humanDebaterIds = new Set((room.debaters || []).filter((debater) => debater.kind === 'human').map((debater) => debater.playerId));
+  return (room.players || []).filter((player) => !player.isHost && !player.isBot && !humanDebaterIds.has(player.id) && Number(player.bankroll || 0) >= 10);
+}
+
+async function joinAudience(roomId) {
   const audience = [
     { name: 'Ada Odds', amount: 50 },
     { name: 'Sam Spread', amount: 75 },
     { name: 'Jules Jury', amount: 100 },
   ];
-  for (const [index, bettor] of audience.entries()) {
+  const joinedAudience = [];
+  for (const bettor of audience) {
     const joined = await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: { displayName: bettor.name } });
+    joinedAudience.push({ ...bettor, id: joined.playerId });
+  }
+  return joinedAudience;
+}
+
+async function placeAudienceBets(roomId, markets, audience) {
+  if (!markets?.length) throw new Error('Cannot seed smoke bets before odds are posted.');
+  for (const [index, bettor] of audience.entries()) {
     const market = markets[index % markets.length];
     await api(`/api/rooms/${roomId}/bets`, {
       method: 'POST',
-      body: { playerId: joined.playerId, marketId: market.id, amount: bettor.amount },
+      body: { playerId: bettor.id, marketId: market.id, amount: bettor.amount || 50 },
     });
   }
 }
@@ -180,9 +209,35 @@ async function createHumanDebateRoom(label = 'Human Smoke Host') {
   return { roomId, hostToken, hostPlayerId: created.playerId, humanPlayerId: human.playerId, bettorPlayerId: bettor.playerId };
 }
 
+async function runTimerBettingWindowCheck() {
+  const created = await api('/api/rooms', { method: 'POST', body: { displayName: 'Timer Window Host' } });
+  const roomId = created.room.id;
+  const hostToken = created.hostToken;
+  const bettor = await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: { displayName: 'Slow Bettor' } });
+  await api(`/api/rooms/${roomId}/topic`, {
+    method: 'POST',
+    headers: { 'X-Host-Token': hostToken },
+    body: { customTopic: 'Resolved: The office microwave deserves a vacation.' },
+  });
+  await api(`/api/rooms/${roomId}/personas`, {
+    method: 'POST',
+    headers: { 'X-Host-Token': hostToken },
+    body: { personaAId: 'formal_logician', personaBId: 'product_manager' },
+  });
+  const odds = await api(`/api/rooms/${roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
+  if (odds.room.bettingWindow?.done) throw new Error('Timer betting window closed immediately despite an eligible bettor.');
+  await delay(Number(health.bettingWindowMs) + 150);
+  const expired = await api(`/api/rooms/${roomId}`);
+  if (!expired.room.bettingWindow?.done || expired.room.bettingWindow.doneReason !== 'timer_elapsed') throw new Error('Betting window did not close by timer.');
+  await expectApiError(`/api/rooms/${roomId}/bets`, { method: 'POST', body: { playerId: bettor.playerId, marketId: odds.room.markets[0].id, amount: 50 } }, 400);
+  await api(`/api/rooms/${roomId}/heckles`, { method: 'POST', body: { playerId: bettor.playerId, cardId: 'legal_caveat' } });
+  await api(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
+}
+
 const health = await api('/api/health');
 if (typeof health.transcriptStreamCps !== 'number') throw new Error('Health payload did not expose transcript streaming speed.');
 if (typeof health.debateBotPauseMs !== 'number') throw new Error('Health payload did not expose debate bot pause.');
+if (typeof health.bettingWindowMs !== 'number') throw new Error('Health payload did not expose betting window duration.');
 if (!health.persistence || typeof health.persistence.redisConfigured !== 'boolean') throw new Error('Health payload did not expose persistence state.');
 if (!health.access || typeof health.access.required !== 'boolean') throw new Error('Health payload did not expose access state.');
 if (health.access.required) {
@@ -387,6 +442,7 @@ await api(`/api/rooms/${weakRoom.roomId}/debaters`, {
   body: { debaterA: { kind: 'human', playerId: weakRoom.humanPlayerId }, debaterB: { kind: 'ai', personaId: 'corporate_lawyer' } },
 });
 await api(`/api/rooms/${weakRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': weakRoom.hostToken }, body: {} });
+await api(`/api/rooms/${weakRoom.roomId}/bets`, { method: 'POST', body: { playerId: weakRoom.bettorPlayerId, marketId: 'winner_b', amount: 50 } });
 await api(`/api/rooms/${weakRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': weakRoom.hostToken }, body: {} });
 const weakFinal = await submitHumanTurnsUntilResults(weakRoom.roomId, weakRoom.humanPlayerId, () => 'what');
 if (weakFinal.room.verdict?.winnerDebaterId === 'debater_a') throw new Error('Weak human arguments incorrectly beat the AI debater.');
@@ -401,9 +457,14 @@ if (Number(health.humanTurnTimeoutMs || 90000) <= 1000) {
     body: { debaterA: { kind: 'human', playerId: timeoutRoom.humanPlayerId }, debaterB: { kind: 'ai', personaId: 'product_manager' } },
   });
   await api(`/api/rooms/${timeoutRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': timeoutRoom.hostToken }, body: {} });
+  await api(`/api/rooms/${timeoutRoom.roomId}/bets`, { method: 'POST', body: { playerId: timeoutRoom.bettorPlayerId, marketId: 'winner_b', amount: 50 } });
   await api(`/api/rooms/${timeoutRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': timeoutRoom.hostToken }, body: {} });
   const timeoutFinal = await waitForResults(timeoutRoom.roomId);
   if (!timeoutFinal.turns.some((turn) => turn.timeoutFilled && turn.source === 'ai_timeout')) throw new Error('Human turn timeout did not produce an AI fill-in transcript entry.');
+}
+
+if (Number(health.bettingWindowMs || 90000) <= 1000) {
+  await runTimerBettingWindowCheck();
 }
 
 await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', body: { mode: 'kids' } }, 404);

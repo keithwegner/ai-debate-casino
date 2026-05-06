@@ -28,12 +28,15 @@ const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 90000);
 const DEBATE_SCRIPT = String(process.env.DEBATE_SCRIPT || 'full').toLowerCase();
 const HUMAN_TURN_TIMEOUT_MS_RAW = Number(process.env.HUMAN_TURN_TIMEOUT_MS || 90000);
 const HUMAN_TURN_TIMEOUT_MS = Number.isFinite(HUMAN_TURN_TIMEOUT_MS_RAW) ? Math.max(200, HUMAN_TURN_TIMEOUT_MS_RAW) : 90000;
+const BETTING_WINDOW_MS_RAW = Number(process.env.BETTING_WINDOW_MS || 90000);
+const BETTING_WINDOW_MS = Number.isFinite(BETTING_WINDOW_MS_RAW) ? Math.max(500, BETTING_WINDOW_MS_RAW) : 90000;
 const TRANSCRIPT_STREAM_CPS_DEFAULT = 22;
 const TRANSCRIPT_STREAM_CPS_RAW = Number(process.env.TRANSCRIPT_STREAM_CPS || TRANSCRIPT_STREAM_CPS_DEFAULT);
 const TRANSCRIPT_STREAM_CPS = Number.isFinite(TRANSCRIPT_STREAM_CPS_RAW) ? Math.max(1, TRANSCRIPT_STREAM_CPS_RAW) : TRANSCRIPT_STREAM_CPS_DEFAULT;
 const DEBATE_BOT_PAUSE_MS_RAW = Number(process.env.DEBATE_BOT_PAUSE_MS || 3000);
 const DEBATE_BOT_PAUSE_MS = Number.isFinite(DEBATE_BOT_PAUSE_MS_RAW) ? Math.max(0, DEBATE_BOT_PAUSE_MS_RAW) : 3000;
 const STREAM_TICK_MS = 140;
+const MIN_BET_AMOUNT = 10;
 const MOCK_REQUESTED = process.env.MOCK_AI === 'true';
 const MOCK_AI = MOCK_REQUESTED || !OPENAI_KEY_STATUS.usable;
 const MOCK_REASON = MOCK_REQUESTED ? 'MOCK_AI=true' : OPENAI_KEY_STATUS.reason;
@@ -206,6 +209,7 @@ function createRoom(hostName) {
     markets: [],
     bets: [],
     heckles: [],
+    bettingWindow: null,
     chatMessages: [],
     juryReactions: [],
     turns: [],
@@ -272,6 +276,7 @@ function reviveRoom(rawRoom) {
     markets: Array.isArray(rawRoom?.markets) ? rawRoom.markets : [],
     bets: Array.isArray(rawRoom?.bets) ? rawRoom.bets : [],
     heckles: Array.isArray(rawRoom?.heckles) ? rawRoom.heckles : [],
+    bettingWindow: rawRoom?.bettingWindow || null,
     chatMessages: Array.isArray(rawRoom?.chatMessages) ? rawRoom.chatMessages : [],
     juryReactions: Array.isArray(rawRoom?.juryReactions) ? rawRoom.juryReactions : [],
     turns: Array.isArray(rawRoom?.turns) ? rawRoom.turns : [],
@@ -355,6 +360,7 @@ function publicRoom(room) {
     markets: room.markets,
     bets: room.bets,
     heckles: room.heckles,
+    bettingWindow: publicBettingWindow(room),
     chatMessages: room.chatMessages || [],
     juryReactions: room.juryReactions || [],
     jury: jurySummary(room),
@@ -399,6 +405,7 @@ function healthPayload() {
     debateScript: DEBATE_SCRIPT === 'fast' ? 'fast' : 'full',
     timeoutMs: OPENAI_TIMEOUT_MS,
     humanTurnTimeoutMs: HUMAN_TURN_TIMEOUT_MS,
+    bettingWindowMs: BETTING_WINDOW_MS,
     transcriptStreamCps: TRANSCRIPT_STREAM_CPS,
     debateBotPauseMs: DEBATE_BOT_PAUSE_MS,
     persistence: {
@@ -602,6 +609,7 @@ async function handleApi(req, res, url) {
       assignDebaters(room, body.personaAId, body.personaBId);
       room.markets = [];
       room.bets = [];
+      clearBettingWindow(room);
       room.juryReactions = [];
       setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
       pushComment(room, `${room.debaters[0].displayName} and ${room.debaters[1].displayName} entered the arena.`);
@@ -616,6 +624,7 @@ async function handleApi(req, res, url) {
       assignMixedDebaters(room, body.debaterA, body.debaterB);
       room.markets = [];
       room.bets = [];
+      clearBettingWindow(room);
       room.juryReactions = [];
       setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
       pushComment(room, `${room.debaters[0].displayName} and ${room.debaters[1].displayName} entered the arena.`);
@@ -659,7 +668,7 @@ async function handleApi(req, res, url) {
     if (method === 'POST' && action === 'odds') {
       requireHost(req, room);
       if (!room.topic) throw apiError(400, 'Select a topic first.');
-      if (room.debaters.length !== 2) assignDefaultDebaters(room);
+      if (room.debaters.length !== 2) throw apiError(400, 'Assign debaters first.');
       await postOdds(room);
       return sendJson(res, 200, { room: publicRoom(room) });
     }
@@ -887,6 +896,7 @@ function lockTopic(room, topic, options = {}) {
   room.topic = normalized;
   room.markets = [];
   room.bets = [];
+  clearBettingWindow(room);
   room.juryReactions = [];
   room.turns = [];
   room.streamingTurn = null;
@@ -980,13 +990,75 @@ function humanDebaterForPlayer(room, playerId) {
   return room.debaters.find((d) => d.kind === 'human' && d.playerId === playerId) || null;
 }
 
+function eligibleBettorIds(room) {
+  return (room.players || [])
+    .filter((player) => !player.isHost && !player.isBot)
+    .filter((player) => !humanDebaterForPlayer(room, player.id))
+    .filter((player) => Number(player.bankroll || 0) >= MIN_BET_AMOUNT)
+    .map((player) => player.id);
+}
+
+function openBettingWindow(room) {
+  const openedAtMs = Date.now();
+  room.bettingWindow = {
+    openedAt: new Date(openedAtMs).toISOString(),
+    closesAt: new Date(openedAtMs + BETTING_WINDOW_MS).toISOString(),
+    durationMs: BETTING_WINDOW_MS,
+    eligibleBettorIds: eligibleBettorIds(room),
+  };
+}
+
+function clearBettingWindow(room) {
+  room.bettingWindow = null;
+}
+
+function publicBettingWindow(room) {
+  const window = room.bettingWindow;
+  if (!window || !(room.markets || []).length) return null;
+  const parsedOpenedAtMs = Date.parse(window.openedAt || '');
+  const openedAtMs = Number.isFinite(parsedOpenedAtMs) ? parsedOpenedAtMs : Date.now();
+  const rawDurationMs = Number(window.durationMs || BETTING_WINDOW_MS);
+  const durationMs = Number.isFinite(rawDurationMs) ? Math.max(500, rawDurationMs) : BETTING_WINDOW_MS;
+  const parsedClosesAtMs = Date.parse(window.closesAt || '');
+  const closesAtMs = Number.isFinite(parsedClosesAtMs) ? parsedClosesAtMs : openedAtMs + durationMs;
+  const remainingMs = Math.max(0, closesAtMs - Date.now());
+  const eligibleIds = Array.isArray(window.eligibleBettorIds) ? window.eligibleBettorIds : eligibleBettorIds(room);
+  const eligibleSet = new Set(eligibleIds);
+  const bettedIds = new Set((room.bets || []).map((bet) => bet.userId).filter((userId) => eligibleSet.has(userId)));
+  const eligibleCount = eligibleSet.size;
+  const bettedCount = Math.min(eligibleCount, bettedIds.size);
+  const noEligibleBettors = eligibleCount === 0;
+  const allBettorsReady = eligibleCount > 0 && bettedCount >= eligibleCount;
+  const timerElapsed = remainingMs <= 0;
+  const done = noEligibleBettors || allBettorsReady || timerElapsed;
+  const doneReason = noEligibleBettors
+    ? 'no_eligible_bettors'
+    : allBettorsReady
+      ? 'all_bettors_ready'
+      : timerElapsed
+        ? 'timer_elapsed'
+        : '';
+  return {
+    openedAt: new Date(openedAtMs).toISOString(),
+    closesAt: new Date(closesAtMs).toISOString(),
+    durationMs,
+    remainingMs,
+    done,
+    doneReason,
+    eligibleCount,
+    bettedCount,
+  };
+}
+
 async function postOdds(room) {
   room.markets = await safeGenerateOdds(room);
   room.bets = [];
+  room.heckles = room.heckles.filter((h) => h.status === 'spent');
   room.juryReactions = [];
   room.streamingTurn = null;
   room.verdict = null;
   room.settlements = null;
+  openBettingWindow(room);
   setPhase(room, 'BETTING_OPEN', 'Betting open');
   pushComment(room, 'The Oddsmaker posted the board. Fake chips only; no cash value.');
 }
@@ -994,19 +1066,23 @@ async function postOdds(room) {
 async function ensureDebateReady(room) {
   if (room.running) throw apiError(409, 'Debate already running.');
   if (!room.topic) throw apiError(400, 'Select a topic first.');
-  if (room.debaters.length !== 2) assignDefaultDebaters(room);
-  if (!room.markets.length) await postOdds(room);
+  if (room.debaters.length !== 2) throw apiError(400, 'Assign debaters first.');
+  if (!room.markets.length) throw apiError(400, 'Post odds first.');
+  const bettingWindow = publicBettingWindow(room);
+  if (!bettingWindow?.done) throw apiError(400, 'Betting window is still open.');
 }
 
 function placeBet(room, playerId, marketId, amountRaw) {
   if (room.status !== 'BETTING_OPEN') throw apiError(400, 'Betting is not open.');
+  const bettingWindow = publicBettingWindow(room);
+  if (!bettingWindow || bettingWindow.done) throw apiError(400, 'Betting window is closed.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
   if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot place bets in their own round.');
   const market = room.markets.find((m) => m.id === marketId);
   if (!market) throw apiError(404, 'Market not found.');
   const amount = Math.floor(Number(amountRaw));
-  if (!Number.isFinite(amount) || amount < 10) throw apiError(400, 'Minimum bet is 10 chips.');
+  if (!Number.isFinite(amount) || amount < MIN_BET_AMOUNT) throw apiError(400, `Minimum bet is ${MIN_BET_AMOUNT} chips.`);
   if (amount > 500) throw apiError(400, 'Maximum bet is 500 chips.');
   if (amount > player.bankroll) throw apiError(400, 'Insufficient fake chips.');
   player.bankroll -= amount;
@@ -1018,6 +1094,7 @@ function placeBet(room, playerId, marketId, amountRaw) {
 
 function submitHeckle(room, playerId, cardId) {
   if (!['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(room.status)) throw apiError(400, 'Heckles are available after odds are posted and before the last closing statement.');
+  if (room.status === 'BETTING_OPEN' && !publicBettingWindow(room)?.done) throw apiError(400, 'Heckle Codes unlock after betting closes.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
   const card = HECKLE_CARDS.find((c) => c.id === cardId);
@@ -1183,6 +1260,7 @@ function startDebate(room) {
   room.running = true;
   room.error = null;
   room.streamingTurn = null;
+  clearBettingWindow(room);
   clearPendingHumanTurn(room);
   room.juryReactions = [];
   setPhase(room, 'BETTING_LOCKED', 'Bets locked');
@@ -1498,6 +1576,7 @@ function resetRoom(room, keepBankroll = true) {
   room.pendingCustomPersona = null;
   room.markets = [];
   room.bets = [];
+  room.bettingWindow = null;
   room.heckles = [];
   room.juryReactions = [];
   room.turns = [];
