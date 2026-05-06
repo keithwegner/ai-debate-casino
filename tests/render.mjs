@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const appSource = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
   .replace('initAmbientMotion();\ninit();', '')
-  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState };');
+  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi };');
 
 const root = { innerHTML: '' };
 const context = {
@@ -44,7 +44,7 @@ context.globalThis = context;
 vm.createContext(context);
 vm.runInContext(appSource, context, { filename: 'public/app.js' });
 
-const { state, roomHtml, roundLoopState, bettingWindowState } = context.__app;
+const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi } = context.__app;
 
 function makeRoom(overrides = {}) {
   const openedAt = Date.now() - 10_000;
@@ -113,7 +113,12 @@ assert.doesNotMatch(activeHtml, /Resolved:/);
 assert.match(activeHtml, /Bet amount/);
 assert.match(activeHtml, /Place bet/);
 assert.match(activeHtml, /Betting window/);
-assert.doesNotMatch(activeHtml, /Heckle Codes/);
+assert.doesNotMatch(activeHtml, /Heckle Cards/);
+
+const hostActiveHtml = renderAsHost(activeRoom);
+assert.match(hostActiveHtml, /Hosts guide the round/);
+assert.doesNotMatch(hostActiveHtml, /Bet amount/);
+assert.doesNotMatch(hostActiveHtml, /data-action="placeBet"/);
 
 const doneRoom = makeRoom({
   bettingWindow: { ...activeRoom.bettingWindow, done: true, doneReason: 'all_bettors_ready', bettedCount: 2 },
@@ -124,12 +129,52 @@ assert.equal(roundLoopState(doneRoom, doneRoom.players[1], false).current.id, 'd
 assert.doesNotMatch(doneHtml, /Bet amount/);
 assert.doesNotMatch(doneHtml, /Place bet/);
 assert.doesNotMatch(doneHtml, /My bets/);
-assert.match(doneHtml, /Heckle Codes/);
-assert.match(doneHtml, />Heckles</);
+assert.match(doneHtml, /aria-label="Heckle Cards"/);
+assert.match(doneHtml, />Heckle Cards</);
+assert.doesNotMatch(doneHtml, /Bets and heckles/);
+assert.doesNotMatch(doneHtml, /<h3>Bets<\/h3>/);
 
 const hostDoneHtml = renderAsHost(doneRoom);
 assert.match(hostDoneHtml, /Start debate/);
+assert.match(hostDoneHtml, /data-action="startDebate"/);
 assert.doesNotMatch(hostDoneHtml, /Start unlocks in/);
+assert.doesNotMatch(hostDoneHtml, /Watch live debate/);
+assert.doesNotMatch(hostDoneHtml, /Debate is queued/);
+
+const hostDoneWithHeckleHtml = renderAsHost(makeRoom({
+  bettingWindow: { ...activeRoom.bettingWindow, done: true, doneReason: 'no_eligible_bettors', eligibleCount: 0, bettedCount: 0 },
+  heckles: [{ id: 'heckle', playerId: 'host', displayName: 'Host', cardId: 'pirate_analogy', label: 'Pirate Analogy', cost: 25, status: 'pending' }],
+}));
+assert.match(hostDoneWithHeckleHtml, /Queued now/);
+assert.match(hostDoneWithHeckleHtml, /Pirate Analogy by Host/);
+assert.match(hostDoneWithHeckleHtml, /1 queued/);
+
+const lockedRoom = makeRoom({
+  status: 'BETTING_LOCKED',
+  currentPhase: 'Starting debate',
+  bettingWindow: null,
+  running: true,
+});
+const hostLockedHtml = renderAsHost(lockedRoom);
+const playerLockedHtml = renderAsPlayer(lockedRoom);
+assert.match(hostLockedHtml, /Debate is queued/);
+assert.match(hostLockedHtml, /Watch live debate/);
+assert.match(playerLockedHtml, /Debate is queued|Debate is starting/);
+assert.match(playerLockedHtml, /Go to live|Watch live/);
+
+state.ui.hostConsoleOpen = true;
+state.ui.hostConsoleScrollTop = 48;
+state.ui.activeSection = 'host';
+state.ui.roomTab = 'chat';
+state.ui.chatOpen = true;
+state.ui.scrollToLiveAfterRender = false;
+afterStartDebateUi();
+assert.equal(state.ui.hostConsoleOpen, false);
+assert.equal(state.ui.hostConsoleScrollTop, 0);
+assert.equal(state.ui.activeSection, 'live');
+assert.equal(state.ui.roomTab, 'seats');
+assert.equal(state.ui.chatOpen, false);
+assert.equal(state.ui.scrollToLiveAfterRender, true);
 
 const judgingRoom = makeRoom({
   status: 'JUDGING',
@@ -140,7 +185,7 @@ const judgingRoom = makeRoom({
 const judgingHtml = renderAsPlayer(judgingRoom);
 assert.doesNotMatch(judgingHtml, /Bet amount/);
 assert.doesNotMatch(judgingHtml, /Place bet/);
-assert.doesNotMatch(judgingHtml, /Heckle Codes/);
+assert.doesNotMatch(judgingHtml, /Heckle Cards/);
 assert.match(judgingHtml, /Closed for judging/);
 
 console.log('Renderer checks passed.');

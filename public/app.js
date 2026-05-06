@@ -26,6 +26,7 @@ let state = {
     navScrollBound: false,
     navFrame: 0,
     bettingExpiryRenderKey: '',
+    scrollToLiveAfterRender: false,
   },
 };
 
@@ -249,6 +250,7 @@ function render() {
   restoreTopicVoteState();
   restoreChatState();
   syncCountdownTimer();
+  syncPostRenderFocus();
 }
 
 function accessHtml() {
@@ -315,6 +317,7 @@ function roomHtml(room) {
   const isHost = Boolean(state.session?.hostToken);
   const loop = roundLoopState(room, me, isHost);
   const liveClass = room.status === 'DEBATE' ? 'debate-live' : '';
+  const sidePanelLabel = hecklesVisibleState(room) ? 'Heckle Cards' : 'Bets';
   return `
     <main class="app-shell room-shell ${liveClass}">
       ${topBarHtml(room, me, isHost)}
@@ -331,7 +334,7 @@ function roomHtml(room) {
           ${transcriptHtml(room)}
           ${verdictHtml(room)}
         </section>
-        <aside id="bets" class="sportsbook panel bets-section ${betsSectionClass(room)}" aria-label="Bets and heckles">
+        <aside id="bets" class="sportsbook panel bets-section ${betsSectionClass(room)}" aria-label="${h(sidePanelLabel)}">
           ${roundActionPanelHtml(room, me)}
         </aside>
         <aside id="room" class="room-section" aria-label="Room details">
@@ -345,8 +348,7 @@ function roomHtml(room) {
 
 function mobileSectionNavHtml(room, isHost, loop) {
   const active = activeNavSection();
-  const betting = bettingWindowState(room);
-  const betsLabel = betting.done && ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(room.status) ? 'Heckles' : 'Bets';
+  const betsLabel = hecklesVisibleState(room) ? 'Heckle Cards' : 'Bets';
   const items = [
     ['live', 'Live', '#live'],
     ['bets', betsLabel, '#bets'],
@@ -362,10 +364,9 @@ function mobileSectionNavHtml(room, isHost, loop) {
 
 function navBadgeHtml(section, loop) {
   const current = loop.current?.id || '';
-  const betting = bettingWindowState(state.room);
   const labels = {
     live: current === 'debate' ? 'Now' : current === 'results' ? 'Judge' : current === 'replay' ? 'Done' : '',
-    bets: current === 'bets' ? 'Now' : betting.done && ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(state.room?.status) ? 'Codes' : '',
+    bets: current === 'bets' ? 'Now' : '',
     room: ['topic', 'debaters'].includes(current) ? 'Setup' : '',
     chat: '',
     host: loop.role === 'Host' && ['topic', 'debaters', 'bets', 'replay'].includes(current) ? 'Next' : '',
@@ -451,8 +452,8 @@ function bettingWindowCopy(betting) {
       ? `${waiting} ${waiting === 1 ? 'bettor still needs' : 'bettors still need'} to place a bet, or the timer can run out.`
       : 'Every eligible bettor has placed a bet.';
   }
-  if (betting.doneReason === 'all_bettors_ready') return 'All eligible bettors placed a bet. Heckle Codes are open until the debate moves into judging.';
-  if (betting.doneReason === 'timer_elapsed') return 'The betting timer elapsed. Heckle Codes are open until the debate moves into judging.';
+  if (betting.doneReason === 'all_bettors_ready') return 'All eligible bettors placed a bet. Heckle Cards are open until the debate moves into judging.';
+  if (betting.doneReason === 'timer_elapsed') return 'The betting timer elapsed. Heckle Cards are open until the debate moves into judging.';
   if (betting.doneReason === 'no_eligible_bettors') return 'No eligible bettors are waiting. The host can start immediately.';
   return 'Betting is closed for this round.';
 }
@@ -547,8 +548,8 @@ function roundLoopState(room, me, isHost) {
   }
   if (status === 'BETTING_OPEN' && betting.done) {
     return isHost
-      ? loopState({ role, steps, title: 'Start the debate', detail: bettingWindowCopy(betting), tone: 'live', action: { label: 'Start debate', attrs: 'data-toggle-host', primary: true } })
-      : loopState({ role, steps, title: 'Heckle Codes are open', detail: 'Betting is done. Buy a code now if you want to influence the next debater.', tone: 'live', action: { label: 'Go to Heckle Codes', attrs: 'data-scroll-target="#bets"', primary: true } });
+      ? loopState({ role, steps, title: 'Start the debate', detail: bettingWindowCopy(betting), tone: 'live', action: { label: 'Start debate', attrs: 'data-action="startDebate"', primary: true } })
+      : loopState({ role, steps, title: 'Heckle Cards are open', detail: 'Betting is done. Buy a card now if you want to influence the next debater.', tone: 'live', action: { label: 'Go to Heckle Cards', attrs: 'data-scroll-target="#bets"', primary: true } });
   }
   if (status === 'BETTING_LOCKED') {
     return isHost
@@ -606,7 +607,7 @@ function roleGuidanceState(room, me, isHost, loop) {
     if (loop.current.id === 'topic') return { ...base, title: 'Pick the topic first', detail: 'Use topic voting if players are here, or set a custom topic and move on.', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } };
     if (loop.current.id === 'debaters') return { ...base, title: 'Build the matchup', detail: 'Choose two AI debaters, or assign one player against one AI debater.', action: { label: 'Pick debaters', attrs: 'data-toggle-host', primary: true } };
     if (loop.current.id === 'bets') return { ...base, title: betting.active ? 'Let the betting window run' : 'Post odds to unlock bets', detail: betting.active ? `${formatCountdown(betting.remainingMs)} left. ${bettingWindowCopy(betting)}` : 'Odds create the fake-chip markets players can understand at a glance.', action: { label: betting.active ? 'Watch betting' : 'Post odds', attrs: betting.active ? 'data-scroll-target="#bets"' : 'data-toggle-host', primary: true } };
-    if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Betting is done', detail: 'Heckle Codes are open now. Start the debate when ready.', action: { label: 'Start debate', attrs: 'data-toggle-host', primary: true } };
+    if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Betting is done', detail: 'Heckle Cards are open now. Start the debate when ready.', action: { label: 'Start debate', attrs: 'data-action="startDebate"', primary: true } };
     if (loop.current.id === 'debate') return { ...base, title: 'The debate is live', detail: 'Monitor the stage. Human debaters will get an inline timer when it is their turn.', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"' } };
     if (loop.current.id === 'results') return { ...base, title: 'Judge is resolving the round', detail: 'Results, payouts, and the audience read will appear automatically.', action: null };
     return { ...base, title: 'Replay from the same room', detail: 'Keep the players, collapse the result, and start with a new topic.', action: { label: 'Play another round', attrs: 'data-action="resetRoom"', primary: true } };
@@ -617,7 +618,7 @@ function roleGuidanceState(room, me, isHost, loop) {
   if (loop.current.id === 'bets') return isHumanDebater
     ? { ...base, title: 'You are debating this round', detail: 'Betting is blocked for active debaters. Watch for your typed turn during the debate.', action: null, badge: 'Bets blocked for debaters' }
     : { ...base, title: betting.active ? 'Place a fake-chip bet' : 'Odds are almost ready', detail: betting.active ? `${formatCountdown(betting.remainingMs)} left. Pick one market before betting closes.` : 'Review the matchup while the host posts odds.', action: { label: betting.active ? 'Go to bets' : 'Review room', attrs: betting.active ? 'data-scroll-target="#bets"' : 'data-scroll-target="#room"', primary: betting.active } };
-  if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Heckle Codes are open', detail: 'Betting is done, so the only side action left is buying a Heckle Code before judging.', action: { label: 'Go to Heckle Codes', attrs: 'data-scroll-target="#bets"', primary: true }, badge: 'Codes unlocked' };
+  if (status === 'BETTING_OPEN' && betting.done) return { ...base, title: 'Heckle Cards are open', detail: 'Betting is done, so the only side action left is buying a Heckle Card before judging.', action: { label: 'Go to Heckle Cards', attrs: 'data-scroll-target="#bets"', primary: true }, badge: 'Cards unlocked' };
   if (loop.current.id === 'debate') return { ...base, title: isHumanDebater ? 'Watch for your turn' : 'React while the debate runs', detail: isHumanDebater ? 'When your timer appears, type your argument before AI fill-in takes over.' : 'Read the current turn, use jury reactions, and keep chat for table talk.', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"', primary: true } };
   if (loop.current.id === 'results') return { ...base, title: 'Judge is scoring', detail: 'Bets are closed. Results and payouts will appear when judging finishes.', action: null };
   return { ...base, title: 'Stay in the room for replay', detail: 'Review the result, invite more players, and wait for the host to start another round.', action: { label: 'Copy invite link', attrs: 'data-action="copyLink"' }, badge: 'Ready for replay' };
@@ -1018,10 +1019,10 @@ function scoreCardHtml(debater, score = {}) {
 function sportsbookHtml(room, me) {
   const humanDebater = humanDebaterForCurrentPlayer(room, me);
   const betting = bettingWindowState(room);
-  const canBet = room.status === 'BETTING_OPEN' && betting.active && !humanDebater && !me?.isHost;
+  const isHost = Boolean(me?.isHost);
+  const canBet = room.status === 'BETTING_OPEN' && betting.active && !humanDebater && !isHost;
   const unavailable = betUnavailableReason(room, humanDebater);
   if (!room.markets?.length) {
-    const isHost = Boolean(state.session?.hostToken);
     return `
       <div class="kicker">Bets</div>
       <h3>Bets</h3>
@@ -1038,8 +1039,8 @@ function sportsbookHtml(room, me) {
     <h3>Bets</h3>
     ${bettingWindowPanelHtml(betting)}
     ${unavailable ? `<p class="bet-blocked">${h(unavailable)}</p>` : ''}
-    <label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />
-    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small><strong>Result rule:</strong> ${h(m.settleRule)}</small><button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Place bet</button></article>`).join('')}</div>
+    ${isHost ? '' : `<label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />`}
+    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small><strong>Result rule:</strong> ${h(m.settleRule)}</small>${isHost ? '' : `<button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Place bet</button>`}</article>`).join('')}</div>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
 }
 
@@ -1063,13 +1064,18 @@ function hecklesHtml(room, me) {
   if (!hecklesVisibleState(room)) return '';
   const allowed = ['BETTING_OPEN', 'BETTING_LOCKED', 'DEBATE'].includes(room.status);
   const pending = room.heckles.filter((x) => x.status === 'pending' || x.status === 'queued');
+  const isHost = Boolean(me?.isHost);
   return `
     <section class="heckles">
       <div class="kicker">Unlocked after betting</div>
-      <h3>Heckle Codes</h3>
-      <p class="muted small">Spend 25 fake chips to force the next debater to satisfy a constraint. Codes close when judging begins.</p>
-      <div class="heckle-grid">${(room.heckleCards || []).map((c) => `<button data-action="submitHeckle" data-card-id="${h(c.id)}" ${allowed && (me?.bankroll || 0) >= c.cost ? '' : 'disabled'}><strong>${h(c.label)}</strong><span>${h(c.cost)} chips</span></button>`).join('')}</div>
-      ${pending.length ? `<div class="pending-heckles"><div class="kicker">Pending</div>${pending.map((x) => `<span>${h(x.label)} by ${h(x.displayName)}</span>`).join('')}</div>` : ''}
+      <h3>Heckle Cards</h3>
+      <p class="muted small">${h(isHost ? 'Queue a test Heckle Card before starting the debate. Cards close when judging begins.' : 'Spend fake chips to force the next debater to satisfy a constraint. Cards close when judging begins.')}</p>
+      ${pending.length ? `<div class="pending-heckles"><div class="kicker">Queued now</div>${pending.map((x) => `<span>${h(x.label)} by ${h(x.displayName)}</span>`).join('')}</div>` : ''}
+      <div class="heckle-grid">${(room.heckleCards || []).map((c) => {
+        const queuedCount = pending.filter((item) => item.cardId === c.id).length;
+        const meta = queuedCount ? `${queuedCount} queued · ${c.cost} chips` : `${c.cost} chips`;
+        return `<button class="${queuedCount ? 'queued' : ''}" data-action="submitHeckle" data-card-id="${h(c.id)}" ${allowed && (me?.bankroll || 0) >= c.cost ? '' : 'disabled'}><strong>${h(c.label)}</strong><span>${h(meta)}</span></button>`;
+      }).join('')}</div>
     </section>`;
 }
 
@@ -1293,6 +1299,15 @@ function bettingControlsHtml(room, canEdit) {
 }
 
 function debateControlsHtml(room) {
+  const betting = bettingWindowState(room);
+  if (room.status === 'BETTING_OPEN' && betting.done && !room.running) {
+    return `
+    <div class="wizard-fields">
+      ${roundSetupSummaryHtml(room)}
+      <p class="control-help ready">${h(bettingWindowCopy(betting))}</p>
+      <button class="primary" data-action="startDebate">${buttonContent('startDebate', 'Start debate')}</button>
+    </div>`;
+  }
   return `
     <div class="wizard-fields">
       <p class="control-help ready">${room.status === 'DEBATE' ? 'Debate is live. The stage will advance turn by turn.' : 'Debate is queued. The first live turn will appear as soon as the runner starts.'}</p>
@@ -1661,6 +1676,19 @@ function resetHostConsoleState() {
   state.ui.hostConsoleScrollTop = 0;
 }
 
+function afterStartDebateUi() {
+  const drawer = document.getElementById('host-console');
+  if (drawer) {
+    drawer.open = false;
+    drawer.scrollTop = 0;
+  }
+  resetHostConsoleState();
+  state.ui.activeSection = 'live';
+  state.ui.roomTab = 'seats';
+  state.ui.chatOpen = false;
+  state.ui.scrollToLiveAfterRender = true;
+}
+
 function bindTopicVote() {
   const form = document.getElementById('topicSuggestionForm');
   const textarea = document.getElementById('topicSuggestion');
@@ -1822,7 +1850,11 @@ async function handleAction(action, payload = {}) {
         state.message = 'Custom debater draft discarded.';
         break;
       case 'postOdds': data = await api(`${roomPath}/odds`, { method: 'POST', host: true, body: {} }); state.message = 'Odds posted.'; break;
-      case 'startDebate': data = await api(`${roomPath}/start`, { method: 'POST', host: true, body: {} }); state.message = 'Debate started.'; break;
+      case 'startDebate':
+        data = await api(`${roomPath}/start`, { method: 'POST', host: true, body: {} });
+        afterStartDebateUi();
+        state.message = 'Debate started.';
+        break;
       case 'resetRoom': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: true } }); state.message = 'Ready for another round.'; break;
       case 'resetBankrolls': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: false } }); state.message = 'Room and bankrolls reset.'; break;
       case 'placeBet': data = await api(`${roomPath}/bets`, { method: 'POST', body: { playerId: state.session.playerId, marketId: payload.marketId, amount: inputs.betAmount } }); state.message = 'Bet placed.'; break;
@@ -1945,6 +1977,14 @@ function syncCountdownTimer() {
     state.countdownTimer = null;
   }
   updateCountdownDisplay();
+}
+
+function syncPostRenderFocus() {
+  if (!state.ui.scrollToLiveAfterRender) return;
+  state.ui.scrollToLiveAfterRender = false;
+  requestAnimationFrame(() => {
+    document.getElementById('live')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function updateCountdownDisplay() {
