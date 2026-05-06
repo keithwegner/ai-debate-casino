@@ -275,24 +275,28 @@ function accessHtml() {
 function landingHtml() {
   return `
     <main class="shell landing">
-      <section class="hero casino-hero">
+      <section class="hero casino-hero start-hero">
         <div class="marquee-band" aria-hidden="true"></div>
         <div class="hero-copy">
           <div class="casino-mark" aria-hidden="true"><span>AI</span></div>
-          <div class="kicker">Fake chips. Real model arguments.</div>
-          <h1>AI Debate Casino</h1>
-          <p class="lede">A party-game sportsbook where AI personas debate ridiculous propositions and an AI judge settles the fake-chip board.</p>
+          <div class="kicker">Topic → Debaters → Bets → Debate → Results → Replay</div>
+          <h1>Start an AI debate game</h1>
+          <p class="lede">Host a room, invite players, pick a topic, bet fake chips, watch the debate, and play another round.</p>
         </div>
         ${flashHtml()}
-        <div class="landing-grid" aria-label="Create or join a room">
-          <form id="createForm" class="form-card cashier-card">
-            <h2>Create a room</h2>
+        <div class="landing-grid landing-entry" aria-label="Host or join a room">
+          <form id="createForm" class="form-card cashier-card entry-card">
+            <div class="entry-number">1</div>
+            <h2>Host a room</h2>
+            <p>Guide the round, choose setup options, and start each phase.</p>
             <label>Your display name</label>
             <input name="displayName" value="Keith" maxlength="32" />
-            <button class="primary" type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('createRoom', 'Create room')}</button>
+            <button class="primary" type="submit" ${state.pendingAction ? 'disabled' : ''}>${buttonContent('createRoom', 'Host a room')}</button>
           </form>
-          <form id="joinForm" class="form-card cashier-card">
+          <form id="joinForm" class="form-card cashier-card entry-card">
+            <div class="entry-number">2</div>
             <h2>Join a room</h2>
+            <p>Enter the code, vote on topics, place fake-chip bets, chat, and react.</p>
             <label>Room code</label>
             <input name="roomId" placeholder="ABC123" maxlength="12" value="${h(queryRoomId)}" />
             <label>Your display name</label>
@@ -308,16 +312,18 @@ function landingHtml() {
 function roomHtml(room) {
   const me = currentPlayer(room);
   const isHost = Boolean(state.session?.hostToken);
+  const loop = roundLoopState(room, me, isHost);
   const liveClass = room.status === 'DEBATE' ? 'debate-live' : '';
   return `
     <main class="app-shell room-shell ${liveClass}">
       ${topBarHtml(room, me, isHost)}
-      ${nextActionBarHtml(room, me, isHost)}
+      ${roundLoopHtml(loop)}
       ${flashHtml()}
       ${processingHtml(room)}
       <section class="experience-grid">
         <section id="live" class="stage panel live-section" aria-label="Debate table">
           <div class="table-marker" aria-hidden="true"></div>
+          ${roleGuidanceHtml(room, me, isHost, loop)}
           ${topicHtml(room, me)}
           ${humanTurnHtml(room, me)}
           ${juryHtml(room, me)}
@@ -332,21 +338,36 @@ function roomHtml(room) {
           ${roomPanelHtml(room, me, isHost)}
         </aside>
       </section>
-      ${mobileSectionNavHtml(isHost)}
+      ${mobileSectionNavHtml(room, isHost, loop)}
       ${isHost ? hostControlsHtml(room) : ''}
     </main>`;
 }
 
-function mobileSectionNavHtml(isHost) {
+function mobileSectionNavHtml(room, isHost, loop) {
   const active = activeNavSection();
+  const items = [
+    ['live', 'Live', '#live'],
+    ['bets', 'Bets', '#bets'],
+    ['room', 'Room', '#room'],
+  ];
   return `
     <nav class="mobile-section-nav ${isHost ? 'has-host' : 'player-only'}" aria-label="Room sections">
-      <a class="${active === 'live' ? 'active' : ''}" href="#live">Live</a>
-      <a class="${active === 'bets' ? 'active' : ''}" href="#bets">Bets</a>
-      <a class="${active === 'room' ? 'active' : ''}" href="#room">Room</a>
-      <button type="button" class="${active === 'chat' ? 'active' : ''}" data-toggle-chat>Chat</button>
-      ${isHost ? `<button type="button" class="${active === 'host' ? 'active' : ''}" data-toggle-host>Host</button>` : ''}
+      ${items.map(([id, label, href]) => `<a class="${active === id ? 'active' : ''}" href="${href}"><span>${h(label)}</span>${navBadgeHtml(id, loop)}</a>`).join('')}
+      <button type="button" class="${active === 'chat' ? 'active' : ''}" data-toggle-chat><span>Chat</span>${navBadgeHtml('chat', loop)}</button>
+      ${isHost ? `<button type="button" class="${active === 'host' ? 'active' : ''}" data-toggle-host><span>Host</span>${navBadgeHtml('host', loop)}</button>` : ''}
     </nav>`;
+}
+
+function navBadgeHtml(section, loop) {
+  const current = loop.current?.id || '';
+  const labels = {
+    live: current === 'debate' ? 'Now' : current === 'results' ? 'Judge' : current === 'replay' ? 'Done' : '',
+    bets: current === 'bets' ? 'Now' : '',
+    room: ['topic', 'debaters'].includes(current) ? 'Setup' : '',
+    chat: '',
+    host: loop.role === 'Host' && ['topic', 'debaters', 'bets', 'replay'].includes(current) ? 'Next' : '',
+  };
+  return labels[section] ? `<small class="nav-badge">${h(labels[section])}</small>` : '';
 }
 
 function activeNavSection() {
@@ -377,99 +398,142 @@ function betsSectionClass(room) {
   ].join(' ');
 }
 
-function nextActionBarHtml(room, me, isHost) {
-  const action = nextActionState(room, me, isHost);
+function roundLoopHtml(loop) {
   return `
-    <section class="next-action-bar panel ${action.tone}" aria-label="Current round action">
-      <div class="next-action-copy">
-        <div class="kicker">${h(action.kicker)}</div>
-        <h2>${h(action.title)}</h2>
-        <p>${h(action.detail)}</p>
+    <section class="round-loop panel ${loop.tone}" aria-label="Round loop">
+      <div class="round-loop-copy">
+        <div class="kicker">${h(loop.role)} next</div>
+        <h2>${h(loop.title)}</h2>
+        <p>${h(loop.detail)}</p>
       </div>
-      ${action.button ? `<button type="button" class="next-action-button ${action.button.primary ? 'primary' : ''}" ${action.button.attrs || ''}>${h(action.button.label)}</button>` : ''}
+      <ol class="round-loop-steps">
+        ${loop.steps.map((step, index) => `<li class="round-loop-step ${step.state}" ${step.state === 'current' ? 'aria-current="step"' : ''}><span class="round-step-index">${index + 1}</span><span>${h(step.label)}</span><small>${h(step.status)}</small></li>`).join('')}
+      </ol>
+      ${loop.action ? `<button type="button" class="round-loop-action ${loop.action.primary ? 'primary' : ''}" ${loop.action.attrs || ''}>${h(loop.action.label)}</button>` : ''}
     </section>`;
 }
 
-function nextActionState(room, me, isHost) {
+function roundLoopState(room, me, isHost) {
   const status = room.status || 'LOBBY';
   const hasTopic = Boolean(room.topic);
   const hasDebaters = (room.debaters?.length || 0) === 2;
   const hasMarkets = (room.markets?.length || 0) > 0;
   const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
+  const debateStarted = ['BETTING_LOCKED', 'DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
+  const debateComplete = ['JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
+  const resultsComplete = status === 'RESULTS' || Boolean(room.verdict);
+  const currentId = !hasTopic
+    ? 'topic'
+    : !hasDebaters
+      ? 'debaters'
+      : !hasMarkets || status === 'BETTING_OPEN'
+        ? 'bets'
+        : ['BETTING_LOCKED', 'DEBATE'].includes(status)
+          ? 'debate'
+          : ['JUDGING', 'SETTLEMENT'].includes(status)
+            ? 'results'
+            : resultsComplete
+              ? 'replay'
+              : 'topic';
+
+  const steps = [
+    loopStep('topic', 'Topic', currentId, hasTopic, hasTopic ? 'Set' : 'Choose'),
+    loopStep('debaters', 'Debaters', currentId, hasDebaters, hasDebaters ? 'Assigned' : 'Pick'),
+    loopStep('bets', 'Bets', currentId, debateStarted, status === 'BETTING_OPEN' ? 'Open' : hasMarkets ? 'Posted' : 'Post'),
+    loopStep('debate', 'Debate', currentId, debateComplete, status === 'DEBATE' ? 'Live' : debateStarted ? 'Queued' : 'Start'),
+    loopStep('results', 'Results', currentId, resultsComplete, resultsComplete ? 'Posted' : ['JUDGING', 'SETTLEMENT'].includes(status) ? 'Judging' : 'Pending'),
+    loopStep('replay', 'Replay', currentId, false, resultsComplete ? 'Ready' : 'Later'),
+  ];
+  const role = isHost ? 'Host' : 'Player';
 
   if (!hasTopic) {
     return isHost
-      ? { kicker: 'Host next', title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom resolution.', tone: 'setup' }
-      : { kicker: 'Player next', title: room.topicVote?.open ? 'Suggest or vote on a topic' : 'Waiting for the topic', detail: room.topicVote?.open ? 'Add a resolution or back the one you want debated.' : 'The host is setting up the round.', tone: 'setup' };
+      ? loopState({ role, steps, title: 'Choose the topic', detail: 'Generate candidates, lock the top vote, or enter a custom resolution.', tone: 'setup', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } })
+      : loopState({ role, steps, title: room.topicVote?.open ? 'Suggest or vote on a topic' : 'Waiting for the topic', detail: room.topicVote?.open ? 'Add one resolution or vote for the one you want debated.' : 'The host is setting up the round.', tone: 'setup', action: { label: 'Go to topic', attrs: 'data-scroll-target="#live"' } });
   }
   if (!hasDebaters) {
     return isHost
-      ? { kicker: 'Host next', title: 'Assign debaters', detail: 'Pick two AI debaters or one lobby player against an AI debater.', tone: 'setup' }
-      : { kicker: 'Player next', title: 'Debaters are being assigned', detail: 'The resolution is set. The matchup is next.', tone: 'setup' };
+      ? loopState({ role, steps, title: 'Assign debaters', detail: 'Pick two AI debaters, or put one lobby player against an AI debater.', tone: 'setup', action: { label: 'Pick debaters', attrs: 'data-toggle-host', primary: true } })
+      : loopState({ role, steps, title: 'Debaters are being assigned', detail: 'The resolution is set. The matchup is next.', tone: 'setup' });
   }
   if (!hasMarkets) {
     return isHost
-      ? { kicker: 'Host next', title: 'Post odds', detail: 'Publish markets so players can place fake-chip bets.', tone: 'betting' }
-      : { kicker: 'Player next', title: 'Odds are coming', detail: 'Review the matchup while the host prepares betting.', tone: 'betting' };
+      ? loopState({ role, steps, title: 'Post odds', detail: 'Publish markets so players can place fake-chip bets.', tone: 'betting', action: { label: 'Open betting tools', attrs: 'data-toggle-host', primary: true } })
+      : loopState({ role, steps, title: 'Odds are coming', detail: 'Review the matchup while the host prepares betting.', tone: 'betting', action: { label: 'Review debaters', attrs: 'data-scroll-target="#room"' } });
   }
   if (status === 'BETTING_OPEN') {
     return isHost
-      ? { kicker: 'Host next', title: 'Betting is open', detail: 'Players can bet now. Start the debate when the table is ready.', tone: 'betting' }
-      : { kicker: 'Player next', title: isHumanDebater ? 'Betting is open to the audience' : 'Betting is open', detail: isHumanDebater ? 'You are debating this round, so betting is blocked for you.' : 'Pick a market and place your fake-chip bet before the debate starts.', tone: 'betting', button: { label: 'Go to bets', attrs: 'data-scroll-target="#bets"' } };
+      ? loopState({ role, steps, title: 'Betting is open', detail: 'Players can bet now. Start the debate when the table is ready.', tone: 'betting', action: { label: 'Start when ready', attrs: 'data-toggle-host', primary: true } })
+      : loopState({ role, steps, title: isHumanDebater ? 'Betting is open to the audience' : 'Betting is open', detail: isHumanDebater ? 'You are debating this round, so betting is blocked for you.' : 'Pick a market and place your fake-chip bet before the debate starts.', tone: 'betting', action: isHumanDebater ? null : { label: 'Go to bets', attrs: 'data-scroll-target="#bets"', primary: true } });
   }
   if (status === 'BETTING_LOCKED') {
     return isHost
-      ? { kicker: 'Host next', title: 'Start the debate', detail: 'Bets are locked. Send the debaters to the stage.', tone: 'live' }
-      : { kicker: 'Player next', title: 'Debate is queued', detail: 'Bets are locked. The live turn will appear here next.', tone: 'live' };
+      ? loopState({ role, steps, title: 'Debate is starting', detail: 'Bets are locked. The live turn will appear on the stage.', tone: 'live', action: { label: 'Go to live', attrs: 'data-scroll-target="#live"' } })
+      : loopState({ role, steps, title: 'Debate is queued', detail: 'Bets are locked. The live turn will appear here next.', tone: 'live', action: { label: 'Go to live', attrs: 'data-scroll-target="#live"' } });
   }
   if (status === 'DEBATE') {
-    return { kicker: isHumanDebater ? 'Your round' : 'Live now', title: 'Debate live', detail: isHumanDebater ? 'Watch for your turn timer and type when called.' : 'Follow the current turn and react as the audience jury.', tone: 'live' };
+    return loopState({ role, steps, title: 'Debate live', detail: isHumanDebater ? 'Watch for your turn timer and type when called.' : 'Follow the current turn and react as the audience jury.', tone: 'live', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"', primary: true } });
   }
   if (status === 'JUDGING' || status === 'SETTLEMENT') {
-    return { kicker: 'Judging', title: 'Scoring the debate', detail: 'The judge is reviewing the transcript and resolving bets.', tone: 'judging' };
+    return loopState({ role, steps, title: 'Scoring the debate', detail: 'The judge is reviewing the transcript and resolving bets.', tone: 'judging' });
   }
   if (status === 'RESULTS') {
-    return { kicker: 'Results', title: 'Results are posted', detail: isHost ? 'Review the verdict or reset the room from host setup.' : 'Check the verdict, payouts, and audience read.', tone: 'results' };
+    return isHost
+      ? loopState({ role, steps, title: 'Play another round', detail: 'Results are posted. Reset the room to keep players and start the loop again.', tone: 'results', action: { label: 'Play another round', attrs: 'data-action="resetRoom"', primary: true } })
+      : loopState({ role, steps, title: 'Results are posted', detail: 'Check the verdict, stay in the room, and invite players for the next round.', tone: 'results', action: { label: 'Copy invite link', attrs: 'data-action="copyLink"' } });
   }
-  return { kicker: 'Round status', title: room.currentPhase || 'Room open', detail: 'The next action will appear here as setup changes.', tone: 'setup' };
+  return loopState({ role, steps, title: room.currentPhase || 'Room open', detail: 'The next action will appear here as setup changes.', tone: 'setup' });
 }
 
-function setupProgressHtml(room) {
-  const steps = setupProgressSteps(room);
-  const activeIndex = Math.max(0, ...steps.map((step, index) => step.state === 'upcoming' ? -1 : index));
-  const progress = Math.round((activeIndex / Math.max(steps.length - 1, 1)) * 100);
+function loopState(stateValue) {
+  return { action: null, ...stateValue, current: stateValue.steps.find((step) => step.state === 'current') || stateValue.steps[0] };
+}
+
+function loopStep(id, label, currentId, complete, status) {
+  const state = id === currentId ? 'current' : complete ? 'complete' : 'upcoming';
+  return { id, label, state, status };
+}
+
+function roleGuidanceHtml(room, me, isHost, loop = roundLoopState(room, me, isHost)) {
+  const guidance = roleGuidanceState(room, me, isHost, loop);
   return `
-    <section class="setup-progress panel" aria-label="Round setup progress" style="--setup-progress:${progress}%">
-      <ol class="setup-steps">
-        ${steps.map((step, index) => `<li class="setup-step ${step.state}" ${step.state === 'current' ? 'aria-current="step"' : ''}><span class="setup-chip">${index + 1}</span><span class="setup-label">${h(step.label)}</span><span class="setup-status">${h(step.status)}</span></li>`).join('')}
-      </ol>
+    <section class="role-guidance ${isHost ? 'host-role' : 'player-role'}" aria-label="${h(guidance.role)} guidance">
+      <div>
+        <div class="kicker">${h(guidance.role)}</div>
+        <h2>${h(guidance.title)}</h2>
+        <p>${h(guidance.detail)}</p>
+      </div>
+      <div class="role-guidance-actions">
+        ${guidance.action ? `<button type="button" class="${guidance.action.primary ? 'primary' : ''}" ${guidance.action.attrs || ''}>${h(guidance.action.label)}</button>` : ''}
+        <span>${h(guidance.badge)}</span>
+      </div>
     </section>`;
 }
 
-function setupProgressSteps(room) {
+function roleGuidanceState(room, me, isHost, loop) {
   const status = room.status || 'LOBBY';
-  const hasTopic = Boolean(room.topic);
-  const hasDebaters = (room.debaters?.length || 0) === 2;
-  const hasMarkets = (room.markets?.length || 0) > 0;
-  const debatersConfirmed = hasDebaters && state.message === 'Debaters assigned.';
-  const bettingComplete = ['BETTING_LOCKED', 'DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
-  const debateStarted = ['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(status);
-  const resultsComplete = Boolean(room.verdict) || status === 'RESULTS';
+  const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
+  const base = isHost
+    ? { role: 'Host role', badge: 'You control setup' }
+    : { role: me?.id ? 'Player role' : 'Observer role', badge: me?.id ? 'You can act when unlocked' : 'Join to play' };
 
-  return [
-    stepState('Choose Topic', !hasTopic || status === 'TOPIC_SELECTION', hasTopic, 'Set', 'Active', 'Next'),
-    stepState('Assign Debaters', hasTopic && !hasMarkets && !debatersConfirmed, hasDebaters, 'Assigned', 'Active', 'Next'),
-    stepState('Post Odds', hasDebaters && !hasMarkets && debatersConfirmed, hasMarkets, 'Posted', 'Active', 'Next'),
-    stepState('Betting Open', status === 'BETTING_OPEN', bettingComplete, 'Closed', 'Open', 'Queued'),
-    stepState('Start Debate', status === 'BETTING_LOCKED', debateStarted, 'Started', 'Starting', 'Queued'),
-    stepState('Results', status === 'JUDGING' || status === 'SETTLEMENT', resultsComplete, 'Complete', 'Judging', 'Pending'),
-  ];
-}
+  if (isHost) {
+    if (loop.current.id === 'topic') return { ...base, title: 'Pick the resolution first', detail: 'Use topic voting if players are here, or set a custom resolution and move on.', action: { label: 'Open topic tools', attrs: 'data-toggle-host', primary: true } };
+    if (loop.current.id === 'debaters') return { ...base, title: 'Build the matchup', detail: 'Choose two AI debaters, or assign one player against one AI debater.', action: { label: 'Pick debaters', attrs: 'data-toggle-host', primary: true } };
+    if (loop.current.id === 'bets') return { ...base, title: status === 'BETTING_OPEN' ? 'Give players a betting window' : 'Post odds to unlock bets', detail: status === 'BETTING_OPEN' ? 'When the room has had a chance to bet, start the debate.' : 'Odds create the fake-chip markets players can understand at a glance.', action: { label: status === 'BETTING_OPEN' ? 'Start debate' : 'Post odds', attrs: 'data-toggle-host', primary: true } };
+    if (loop.current.id === 'debate') return { ...base, title: 'The debate is live', detail: 'Monitor the stage. Human debaters will get an inline timer when it is their turn.', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"' } };
+    if (loop.current.id === 'results') return { ...base, title: 'Judge is resolving the round', detail: 'Results, payouts, and the audience read will appear automatically.', action: null };
+    return { ...base, title: 'Replay from the same room', detail: 'Keep the players, collapse the result, and start with a new topic.', action: { label: 'Play another round', attrs: 'data-action="resetRoom"', primary: true } };
+  }
 
-function stepState(label, isCurrent, isComplete, completeText, currentText, upcomingText) {
-  const state = isCurrent ? 'current' : isComplete ? 'complete' : 'upcoming';
-  const status = state === 'current' ? currentText : state === 'complete' ? completeText : upcomingText;
-  return { label, state, status };
+  if (loop.current.id === 'topic') return { ...base, title: room.topicVote?.open ? 'Help choose the topic' : 'Wait for the host to choose', detail: room.topicVote?.open ? 'Suggest one resolution, vote for one option, then watch for the lock.' : 'The host is preparing the first step.', action: { label: 'Go to topic vote', attrs: 'data-scroll-target="#live"', primary: true } };
+  if (loop.current.id === 'debaters') return { ...base, title: 'Matchup is next', detail: 'The topic is locked. The host is choosing who argues each side.', action: { label: 'See room', attrs: 'data-scroll-target="#room"' } };
+  if (loop.current.id === 'bets') return isHumanDebater
+    ? { ...base, title: 'You are debating this round', detail: 'Betting is blocked for active debaters. Watch for your typed turn during the debate.', action: null, badge: 'Bets blocked for debaters' }
+    : { ...base, title: status === 'BETTING_OPEN' ? 'Place a fake-chip bet' : 'Odds are almost ready', detail: status === 'BETTING_OPEN' ? 'Pick one market before the host starts the debate. Heckle cards unlock from the same panel.' : 'Review the matchup while the host posts odds.', action: { label: status === 'BETTING_OPEN' ? 'Go to bets' : 'Review room', attrs: status === 'BETTING_OPEN' ? 'data-scroll-target="#bets"' : 'data-scroll-target="#room"', primary: status === 'BETTING_OPEN' } };
+  if (loop.current.id === 'debate') return { ...base, title: isHumanDebater ? 'Watch for your turn' : 'React while the debate runs', detail: isHumanDebater ? 'When your timer appears, type your argument before AI fill-in takes over.' : 'Read the current turn, use jury reactions, and keep chat for table talk.', action: { label: 'Watch live', attrs: 'data-scroll-target="#live"', primary: true } };
+  if (loop.current.id === 'results') return { ...base, title: 'Judge is scoring', detail: 'Bets are closed. Results and payouts will appear when judging finishes.', action: null };
+  return { ...base, title: 'Stay in the room for replay', detail: 'Review the result, invite more players, and wait for the host to start another round.', action: { label: 'Copy invite link', attrs: 'data-action="copyLink"' }, badge: 'Ready for replay' };
 }
 
 function topicHtml(room, me) {
@@ -641,7 +705,7 @@ function juryHelpText(room, target, me, isHumanDebater, existing, hasRecordedRea
     ? 'Audience reactions are closed. The jury meter stays up so everyone can compare the crowd read with the judge.'
     : 'The jury stays hidden until there is a readable turn on stage.';
   if (!me?.id) return 'Join the room to sit on the audience jury.';
-  if (me.isBot) return 'Demo players cannot sit on the jury.';
+  if (me.isBot) return 'Automated players cannot sit on the jury.';
   if (room.status !== 'DEBATE') return 'This turn is readable, but reactions are locked while the judge and settlement finish.';
   if (existing) return `Your read: ${existing.label}. You can change it while the debate is live.`;
   return 'Audience reactions unlock once a turn is readable. One reaction per player per turn while the debate is live.';
@@ -770,14 +834,24 @@ function verdictHtml(room) {
     const market = room.markets.find((m) => m.id === p.marketId);
     return `<tr><td>${h(market?.label || p.marketId)}</td><td>${p.won ? 'Won' : 'Lost'}</td><td>${h(p.evidence)}</td></tr>`;
   }).join('') || '';
-  return `
-    <section class="verdict panel inset">
-      <div class="winner-banner">${h(v.winnerName)} wins by ${h(v.margin)} margin</div>
+  const body = `
       ${formattedTextHtml(v.verdict)}
       <div class="score-grid">${scoreCardHtml(room.debaters[0], v.scores?.debater_a)}${scoreCardHtml(room.debaters[1], v.scores?.debater_b)}</div>
       ${audienceVsJudgeHtml(room)}
       <div class="callouts"><div><div class="kicker">Best line</div><blockquote>${formattedTextHtml(v.bestLine?.quote || '')}</blockquote></div><div><div class="kicker">Worst argument</div>${formattedTextHtml(v.worstArgument?.summary || '')}</div></div>
-      ${props ? `<h4>Bet results</h4><table><tbody>${props}</tbody></table>` : ''}
+      ${props ? `<h4>Bet results</h4><table><tbody>${props}</tbody></table>` : ''}`;
+  if (room.status === 'RESULTS') {
+    return `
+      <details class="verdict panel inset result-review">
+        <summary><span>Round result</span><strong>${h(v.winnerName)} wins by ${h(v.margin)} margin</strong></summary>
+        <div class="winner-banner">${h(v.winnerName)} wins by ${h(v.margin)} margin</div>
+        ${body}
+      </details>`;
+  }
+  return `
+    <section class="verdict panel inset">
+      <div class="winner-banner">${h(v.winnerName)} wins by ${h(v.margin)} margin</div>
+      ${body}
     </section>`;
 }
 
@@ -981,22 +1055,75 @@ function hostControlsHtml(room) {
   const canEdit = !['DEBATE', 'JUDGING', 'SETTLEMENT'].includes(room.status) && !room.running;
   const defaultA = debaterSelectionValue(room.debaters?.[0]) || `ai:${personasForRoom(room)[0]?.id || ''}`;
   const defaultB = debaterSelectionValue(room.debaters?.[1]) || `ai:${personasForRoom(room)[1]?.id || ''}`;
+  const loop = roundLoopState(room, currentPlayer(room), true);
   return `
     <details id="host-console" class="host-drawer" data-open="${state.ui.hostConsoleOpen ? 'true' : 'false'}" ${state.ui.hostConsoleOpen ? 'open' : ''}>
-      <summary><span>Host setup</span><small>Admin sheet</small></summary>
+      <summary><span>Host setup</span><small>${h(loop.current?.label || 'Next step')}</small></summary>
       <section class="host-controls pit-console">
         <div class="host-sheet-head">
-          <div><div class="kicker">Admin sheet</div><h2>Host setup</h2><p>Configure the round without crowding the live table.</p></div>
+          <div><div class="kicker">Host wizard</div><h2>${h(loop.title)}</h2><p>${h(loop.detail)}</p></div>
           <button type="button" class="host-sheet-close" data-close-host>Close</button>
         </div>
-        <div class="section-head"><div><div class="kicker">Round controls</div><h2>Setup actions</h2></div>${hostActionButtonsHtml(room)}</div>
-        ${setupProgressHtml(room)}
-        <div class="host-grid">
-          ${topicControlsHtml(room, canEdit)}
-          <div class="control-card"><h3>2. Debaters and betting</h3>${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}<button id="assignDebatersButton" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button><p id="assignDebatersHelp" class="control-help">${h(debaterAssignmentHelpFromValues(defaultA, defaultB, room))}</p><button data-action="postOdds" ${room.topic && room.debaters?.length === 2 && canEdit ? '' : 'disabled'}>Post odds</button><p class="control-help">${h(postOddsHelp(room, canEdit))}</p><button data-action="demoFill" ${room.status === 'BETTING_OPEN' ? '' : 'disabled'}>Add demo players + bets</button><div class="custom-debater-box"><h4>Create debater</h4><label>Debater name</label><input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} /><label>Profile / personality</label><textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea><button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}</div></div>
-        </div>
+        ${hostWizardHtml(room, canEdit, defaultA, defaultB, loop)}
+        ${hostMaintenanceHtml(room)}
       </section>
     </details>`;
+}
+
+function hostWizardHtml(room, canEdit, defaultA, defaultB, loop) {
+  const stepId = loop.current?.id || 'topic';
+  const stepMap = {
+    topic: {
+      eyebrow: 'Step 1 of 4',
+      title: 'Topic',
+      detail: 'Choose the resolution everyone can understand before any other setup appears.',
+      body: topicControlsHtml(room, canEdit),
+    },
+    debaters: {
+      eyebrow: 'Step 2 of 4',
+      title: 'Debaters',
+      detail: 'Assign the two sides. One lobby player can debate against one AI debater.',
+      body: debaterControlsHtml(room, canEdit, defaultA, defaultB),
+    },
+    bets: {
+      eyebrow: 'Step 3 of 4',
+      title: 'Bets',
+      detail: room.status === 'BETTING_OPEN' ? 'Betting is open. Start the debate when the table is ready.' : 'Post odds so players get one clear betting panel.',
+      body: bettingControlsHtml(room, canEdit),
+    },
+    debate: {
+      eyebrow: 'Step 4 of 4',
+      title: 'Start',
+      detail: 'The live stage owns this phase once the debate begins.',
+      body: debateControlsHtml(room),
+    },
+    results: {
+      eyebrow: 'Results',
+      title: 'Judging',
+      detail: 'The judge is scoring the transcript and resolving bets.',
+      body: judgingControlsHtml(room),
+    },
+    replay: {
+      eyebrow: 'Replay',
+      title: 'Play another round',
+      detail: 'Keep the room together and restart the loop from Topic.',
+      body: replayControlsHtml(room),
+    },
+  };
+  const step = stepMap[stepId] || stepMap.topic;
+  return `
+    <section class="host-wizard" aria-label="Host setup wizard">
+      <ol class="host-wizard-steps">
+        ${loop.steps.slice(0, 4).map((item, index) => `<li class="${item.state}"><span>${index + 1}</span><strong>${h(item.label)}</strong></li>`).join('')}
+      </ol>
+      <article class="host-wizard-card">
+        <div class="host-wizard-card-head">
+          <div><div class="kicker">${h(step.eyebrow)}</div><h3>${h(step.title)}</h3><p>${h(step.detail)}</p></div>
+          <span>${h(stepId === 'replay' ? 'Ready' : stepId === 'results' ? 'Automatic' : 'One action')}</span>
+        </div>
+        ${step.body}
+      </article>
+    </section>`;
 }
 
 function topicControlsHtml(room, canEdit) {
@@ -1004,24 +1131,103 @@ function topicControlsHtml(room, canEdit) {
   const canControl = canEdit && voteOpen;
   const hasCandidates = Boolean((room.topics || []).length);
   return `
-    <div class="control-card">
-      <h3>1. Topic</h3>
+    <div class="wizard-fields">
       <textarea id="topicPrompt" rows="3" placeholder="Optional flavor: workplace absurdism, business parody, animal politics…" ${canControl ? '' : 'disabled'}></textarea>
-      <button data-action="generateTopics" ${canControl ? '' : 'disabled'}>Generate topic candidates</button>
-      <button data-action="closeTopicVote" ${canControl && hasCandidates ? '' : 'disabled'}>Lock top vote</button>
+      <div class="button-row split-actions">
+        <button class="primary" data-action="generateTopics" ${canControl ? '' : 'disabled'}>Generate topic candidates</button>
+        <button data-action="closeTopicVote" ${canControl && hasCandidates ? '' : 'disabled'}>Lock top vote</button>
+      </div>
       <label>Custom resolution</label>
       <input id="customTopic" placeholder="Resolved: The office microwave is a sovereign nation." ${canControl ? '' : 'disabled'} />
       <button data-action="setCustomTopic" ${canControl ? '' : 'disabled'}>Use custom topic</button>
+      <p class="control-help">${h(topicControlHelp(room, canEdit))}</p>
       <div class="topic-list">${(room.topics || []).map((t) => `<article class="mini-topic ${room.topic?.id === t.id ? 'selected' : ''}"><strong>${h(t.resolution)}</strong><div class="muted">${h(t.category)} · ${h(topicVoteCount(room, t.id))} votes</div><button data-action="selectTopic" data-topic-id="${h(t.id)}" ${canControl ? '' : 'disabled'}>Override & lock</button></article>`).join('')}</div>
     </div>`;
 }
 
-function hostActionButtonsHtml(room) {
-  const readyToStart = room.status === 'BETTING_OPEN' && !room.running;
-  const demoIsPrimary = !room.topic && !room.running;
-  const startButton = `<button data-action="startDebate" class="${readyToStart ? 'primary' : ''}" ${readyToStart ? '' : 'disabled'}>Start debate</button>`;
-  const demoButton = `<button data-action="quickDemo" class="${demoIsPrimary ? 'primary' : ''}" ${room.running ? 'disabled' : ''}>One-click demo round</button>`;
-  return `<div class="button-row">${readyToStart ? `${startButton}${demoButton}` : `${demoButton}${startButton}`}<button data-action="resetRoom" ${room.running ? 'disabled' : ''}>Reset</button><button data-action="resetBankrolls" ${room.running ? 'disabled' : ''}>Reset bankrolls</button></div>`;
+function topicControlHelp(room, canEdit) {
+  if (!canEdit) return 'Topic controls lock while a debate or judging is active.';
+  if (room.topic) return 'Topic is locked for this round. Play another round to choose a new one.';
+  if ((room.topics || []).length) return 'Players can vote now. Lock the top vote or override with a clear host choice.';
+  return 'Generate options, let players suggest one, or type the exact resolution yourself.';
+}
+
+function debaterControlsHtml(room, canEdit, defaultA, defaultB) {
+  return `
+    <div class="wizard-fields">
+      ${debaterSlotSelectHtml('debaterA', room.debaters?.[0], room, canEdit)}
+      ${debaterSlotSelectHtml('debaterB', room.debaters?.[1], room, canEdit)}
+      <button id="assignDebatersButton" class="primary" data-action="setPersonas" ${room.topic && canEdit ? '' : 'disabled'}>Assign debaters</button>
+      <p id="assignDebatersHelp" class="control-help">${h(debaterAssignmentHelpFromValues(defaultA, defaultB, room))}</p>
+      <details class="host-advanced">
+        <summary>Create a custom AI debater</summary>
+        <div class="custom-debater-box">
+          <label>Debater name</label>
+          <input id="customPersonaName" maxlength="48" placeholder="Madame Tax Volcano" ${canEdit ? '' : 'disabled'} />
+          <label>Profile / personality</label>
+          <textarea id="customPersonaProfile" rows="3" maxlength="600" placeholder="A furious accountant who treats every argument like an audit with fireworks." ${canEdit ? '' : 'disabled'}></textarea>
+          <button data-action="createCustomDebater" ${canEdit ? '' : 'disabled'}>Generate draft</button>
+          ${customPersonaDraftHtml(room.pendingCustomPersona, canEdit)}
+        </div>
+      </details>
+    </div>`;
+}
+
+function bettingControlsHtml(room, canEdit) {
+  const canPost = Boolean(room.topic && room.debaters?.length === 2 && canEdit);
+  const canStart = room.status === 'BETTING_OPEN' && !room.running;
+  return `
+    <div class="wizard-fields">
+      ${roundSetupSummaryHtml(room)}
+      ${room.markets?.length
+        ? `<p class="control-help ready">Odds are posted. Players can bet from the Bets panel until you start the debate.</p><div class="button-row split-actions"><button data-scroll-target="#bets">Review bets</button><button class="primary" data-action="startDebate" ${canStart ? '' : 'disabled'}>${buttonContent('startDebate', 'Start debate')}</button></div>`
+        : `<button class="primary" data-action="postOdds" ${canPost ? '' : 'disabled'}>${buttonContent('postOdds', 'Post odds')}</button><p class="control-help">${h(postOddsHelp(room, canEdit))}</p>`}
+    </div>`;
+}
+
+function debateControlsHtml(room) {
+  return `
+    <div class="wizard-fields">
+      <p class="control-help ready">${room.status === 'DEBATE' ? 'Debate is live. The stage will advance turn by turn.' : 'Debate is queued. The first live turn will appear as soon as the runner starts.'}</p>
+      <button data-scroll-target="#live" class="primary">Watch live debate</button>
+    </div>`;
+}
+
+function judgingControlsHtml(room) {
+  return `
+    <div class="wizard-fields">
+      <p class="control-help ready">${h(room.currentPhase || 'Judging in progress')}. No host action is needed while scoring finishes.</p>
+      <button data-scroll-target="#live">Watch results area</button>
+    </div>`;
+}
+
+function replayControlsHtml(room) {
+  return `
+    <div class="wizard-fields">
+      <p class="control-help ready">Start a fresh topic while keeping players and bankroll history in the room.</p>
+      <div class="button-row split-actions">
+        <button class="primary" data-action="resetRoom" ${room.running ? 'disabled' : ''}>${buttonContent('resetRoom', 'Play another round')}</button>
+        <button data-action="copyLink">Copy invite link</button>
+      </div>
+    </div>`;
+}
+
+function roundSetupSummaryHtml(room) {
+  const topic = room.topic?.resolution || 'No topic yet';
+  const debaters = room.debaters?.length === 2 ? room.debaters.map((debater) => debater.displayName).join(' vs ') : 'Debaters not assigned';
+  return `<div class="round-setup-summary"><div><strong>Topic</strong><span>${h(topic)}</span></div><div><strong>Matchup</strong><span>${h(debaters)}</span></div></div>`;
+}
+
+function hostMaintenanceHtml(room) {
+  return `
+    <details class="host-maintenance">
+      <summary>Room maintenance</summary>
+      <div class="button-row split-actions">
+        <button data-action="resetRoom" ${room.running ? 'disabled' : ''}>Reset round</button>
+        <button data-action="resetBankrolls" ${room.running ? 'disabled' : ''}>Reset bankrolls</button>
+      </div>
+      <p class="control-help">Use these only when you need to restart setup or clear bankroll history.</p>
+    </details>`;
 }
 
 function debaterSlotSelectHtml(id, debater, room, canEdit) {
@@ -1509,10 +1715,8 @@ async function handleAction(action, payload = {}) {
         state.message = 'Custom debater draft discarded.';
         break;
       case 'postOdds': data = await api(`${roomPath}/odds`, { method: 'POST', host: true, body: {} }); state.message = 'Odds posted.'; break;
-      case 'demoFill': data = await api(`${roomPath}/demo-fill`, { method: 'POST', host: true, body: {} }); state.message = 'Demo audience added.'; break;
-      case 'quickDemo': data = await api(`${roomPath}/quick-demo`, { method: 'POST', host: true, body: {} }); state.message = 'One-click demo started.'; break;
       case 'startDebate': data = await api(`${roomPath}/start`, { method: 'POST', host: true, body: {} }); state.message = 'Debate started.'; break;
-      case 'resetRoom': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: true } }); state.message = 'Room reset.'; break;
+      case 'resetRoom': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: true } }); state.message = 'Ready for another round.'; break;
       case 'resetBankrolls': data = await api(`${roomPath}/reset`, { method: 'POST', host: true, body: { keepBankroll: false } }); state.message = 'Room and bankrolls reset.'; break;
       case 'placeBet': data = await api(`${roomPath}/bets`, { method: 'POST', body: { playerId: state.session.playerId, marketId: payload.marketId, amount: inputs.betAmount } }); state.message = 'Bet placed.'; break;
       case 'submitHumanTurn':
@@ -1594,8 +1798,6 @@ function actionLabel(action) {
     acceptCustomDebater: 'Accepting debater',
     discardCustomDebater: 'Discarding draft',
     postOdds: 'Posting odds',
-    demoFill: 'Adding demo audience',
-    quickDemo: 'Starting demo round',
     startDebate: 'Starting debate',
     resetRoom: 'Resetting room',
     resetBankrolls: 'Resetting bankrolls',

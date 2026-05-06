@@ -135,8 +135,25 @@ async function configureRound(roomId, hostToken, personaAId = 'formal_logician',
   });
   if (assigned.room.debaters[0]?.personaId !== personaAId) throw new Error(`Debater A was not assigned to ${personaAId}.`);
   if (assigned.room.debaters[1]?.personaId !== personaBId) throw new Error(`Debater B was not assigned to ${personaBId}.`);
-  await api(`/api/rooms/${roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
-  await api(`/api/rooms/${roomId}/demo-fill`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
+  const odds = await api(`/api/rooms/${roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
+  await seedAudienceBets(roomId, odds.room.markets);
+}
+
+async function seedAudienceBets(roomId, markets) {
+  if (!markets?.length) throw new Error('Cannot seed smoke bets before odds are posted.');
+  const audience = [
+    { name: 'Ada Odds', amount: 50 },
+    { name: 'Sam Spread', amount: 75 },
+    { name: 'Jules Jury', amount: 100 },
+  ];
+  for (const [index, bettor] of audience.entries()) {
+    const joined = await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: { displayName: bettor.name } });
+    const market = markets[index % markets.length];
+    await api(`/api/rooms/${roomId}/bets`, {
+      method: 'POST',
+      body: { playerId: joined.playerId, marketId: market.id, amount: bettor.amount },
+    });
+  }
 }
 
 async function runConfiguredRound() {
@@ -226,16 +243,8 @@ await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { play
 await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: created.playerId, text: '' } }, 400);
 await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: created.playerId, text: 'x'.repeat(501) } }, 400);
 await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: created.playerId, text: 'how to commit crimes in the chat' } }, 400);
-const botChatRoom = await api('/api/rooms', { method: 'POST', body: { displayName: 'Bot Chat Host' } });
-await configureRound(botChatRoom.room.id, botChatRoom.hostToken);
-const botChatState = await api(`/api/rooms/${botChatRoom.room.id}`);
-const botPlayer = botChatState.room.players.find((player) => player.isBot);
-if (!botPlayer) throw new Error('Demo bot was not available for chat validation.');
-await expectApiError(`/api/rooms/${botChatRoom.room.id}/chat`, { method: 'POST', body: { playerId: botPlayer.id, text: 'bot message' } }, 400);
-await api(`/api/rooms/${botChatRoom.room.id}/reset`, { method: 'POST', headers: { 'X-Host-Token': botChatRoom.hostToken }, body: { keepBankroll: true } });
-const botVoteGenerated = await api(`/api/rooms/${botChatRoom.room.id}/topics/generate`, { method: 'POST', headers: { 'X-Host-Token': botChatRoom.hostToken }, body: {} });
-await expectApiError(`/api/rooms/${botChatRoom.room.id}/topics/submit`, { method: 'POST', body: { playerId: botPlayer.id, text: 'Resolved: Bots should pick the topic.' } }, 400);
-await expectApiError(`/api/rooms/${botChatRoom.room.id}/topics/vote`, { method: 'POST', body: { playerId: botPlayer.id, topicId: botVoteGenerated.room.topics[0].id } }, 400);
+await expectApiError(`/api/rooms/${roomId}/demo-fill`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} }, 404);
+await expectApiError(`/api/rooms/${roomId}/quick-demo`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} }, 404);
 const resetChatRoom = await api(`/api/rooms/${roomId}/reset`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { keepBankroll: true } });
 if (!resetChatRoom.room.chatMessages.some((message) => message.text === profaneChatText)) throw new Error('Room reset did not preserve chat messages.');
 await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'DELETE' }, 403);
