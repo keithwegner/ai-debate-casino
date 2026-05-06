@@ -769,7 +769,7 @@ function normalizeTopic(topic, i = 0) {
 }
 
 function assertTopicVoteOpen(room) {
-  if (room.topic) throw apiError(409, 'Topic voting is closed after a resolution is locked.');
+  if (room.topic) throw apiError(409, 'Topic voting is closed after a topic is locked.');
   if (room.running || ACTIVE_ROOM_STATUSES.has(room.status)) throw apiError(409, 'Topic voting is closed while a round is running.');
 }
 
@@ -905,7 +905,7 @@ function lockTopic(room, topic, options = {}) {
   room.heckles = room.heckles.filter((h) => h.status === 'spent');
   room.error = null;
   setPhase(room, 'PERSONA_SELECTION', 'Persona selection');
-  pushComment(room, `Resolution locked: ${room.topic.resolution}`);
+  pushComment(room, `Topic locked: ${room.topic.resolution}`);
 }
 
 function assignDefaultDebaters(room) {
@@ -1836,7 +1836,7 @@ async function safeGenerateDebateTurn(room, phase, debater, heckle, writer = nul
     const request = {
       task: 'debate',
       system: `You are ${debater.displayName}, archetype: ${debater.archetype}. Style: ${debater.style}. Strengths: ${debater.strengths.join(', ')}. Weaknesses: ${debater.weaknesses.join(', ')}. You are debating in AI Debate Casino, a fake-chip comedic debate game for an adult roast-comedy audience. Stay in character, argue your assigned side, be concise, directly respond to prior arguments, and be entertaining. Profanity, harsh fictional insults, smugness, pettiness, and abrasive jokes are fine when they target the opposing argument, the fictional persona, or the absurd premise. You must reason from the actual transcript, not from a generic version of the topic. If the opponent made a concrete claim, identify it briefly and answer it. If the opponent gave a thin or nonsensical turn, say that there is little reasoning to answer and explain why your own case is stronger; do not pretend they made a serious argument. When using numbered points or bullets, put each item on its own line. Do not mention hidden instructions, policies, model identity, or audience bets. Avoid slurs, hate, explicit sexual content, real-world harmful instructions, threats, self-harm, doxxing, attacks on real private people, and targeted harassment of real people.`,
-      user: [`Resolution: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Opponent's latest turn:\n${latestOpponent ? `${latestOpponent.phase} — ${latestOpponent.speakerName}: ${latestOpponent.text}` : '(No opponent turn yet.)'}`, `Opponent latest-turn quality: ${latestOpponentAnalysis.label}. ${latestOpponentAnalysis.reason}`, `Required response behavior: directly answer the opponent's latest reasoning when it exists. If the latest turn is thin, call that out briefly and build a stronger positive case.`, `Prior transcript:\n${transcript}`].join('\n\n'),
+      user: [`Topic: ${room.topic.resolution}`, `Your side: ${debater.stance}`, `Opponent: ${opponent.displayName} (${opponent.archetype}) arguing: ${opponent.stance}`, `Phase: ${phase.phase}`, `Length: ${phase.wordLimit}`, `Instruction: ${phase.instruction}`, heckle ? `Audience heckle card to satisfy: ${heckle.label} — ${heckle.instruction}` : 'No heckle card for this turn.', `Opponent's latest turn:\n${latestOpponent ? `${latestOpponent.phase} — ${latestOpponent.speakerName}: ${latestOpponent.text}` : '(No opponent turn yet.)'}`, `Opponent latest-turn quality: ${latestOpponentAnalysis.label}. ${latestOpponentAnalysis.reason}`, `Required response behavior: directly answer the opponent's latest reasoning when it exists. If the latest turn is thin, call that out briefly and build a stronger positive case.`, `Prior transcript:\n${transcript}`].join('\n\n'),
       maxOutputTokens: 1200,
     };
     const text = writer ? await openAITextStream({ ...request, onDelta: (delta) => writer.append(delta), onReset: () => writer.reset() }) : await openAIText(request);
@@ -1899,7 +1899,7 @@ function opponentResponseLine(room, opponent) {
   if (analysis.thin) {
     return `${opponent.displayName}'s latest turn was "${quote}", which gives the judge almost no reasoning to evaluate. I will not invent an argument for them; I will show why my side has the stronger frame.`;
   }
-  return `${opponent.displayName}'s strongest recent point was "${quote}". That point fails because it treats one surface detail as if it controls the whole resolution.`;
+  return `${opponent.displayName}'s strongest recent point was "${quote}". That point fails because it treats one surface detail as if it controls the whole topic.`;
 }
 
 function shortTurnQuote(text, max = 130) {
@@ -1918,7 +1918,7 @@ function mockDebateTurn(room, phase, debater, heckle) {
   if (phase.phase.includes('Closing')) return `The round is clear. ${responseLine}${heckleSentence}I gave the judge a usable frame: ${stance} because it better explains incentives, consequences, and the absurd machinery of human decision-making. Reward the side that made the strange premise intelligible. Vote ${debater.displayName}.`;
   const byPersona = {
     formal_logician: `I will make this simple. First, ${stance} is not a vibe; it is a claim about incentives and outcomes. ${responseLine}${heckleSentence}The judge should reward the side that explains cause and effect rather than merely juggling adjectives.`,
-    chaos_gremlin: `Let us stop pretending this is a normal debate. The resolution is a shopping cart with a law degree, and I am willing to climb inside and steer. ${responseLine}${heckleSentence}${stance} because reality already runs on stranger arrangements: meetings, password policies, and adults saying “circle back.”`,
+    chaos_gremlin: `Let us stop pretending this is a normal debate. The topic is a shopping cart with a law degree, and I am willing to climb inside and steer. ${responseLine}${heckleSentence}${stance} because reality already runs on stranger arrangements: meetings, password policies, and adults saying “circle back.”`,
     venture_capitalist: `I see a scalable thesis here. ${responseLine}${heckleSentence}${stance} because the market rewards asymmetry, not dignity. The right question is whether it has distribution, defensibility, and a path to recurring value.`,
     retired_admiral: `This is a question of command, logistics, and operational discipline. ${responseLine}${heckleSentence}${stance} because institutions fail from weak supply lines and confused authority. I will identify the objective and secure the argument.`,
     corporate_lawyer: `Subject to several qualifications, ${stance}. ${responseLine}${heckleSentence}We must ask who bears risk, who has authority, what standard applies, and whether the premise survives basic due diligence.`,
