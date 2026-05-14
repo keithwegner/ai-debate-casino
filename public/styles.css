@@ -4392,3 +4392,642 @@ textarea:focus {
     transform: none !important;
   }
 }
+
+/* Electric Arcade redesign layer */
+:root {
+  color-scheme: light;
+  --cream: #eef3ff;
+  --paper: #ffffff;
+  --paper-strong: #f4f7ff;
+  --ink: #151622;
+  --ink-soft: #4d5266;
+  --muted: #747b91;
+  --surface: #ffffff;
+  --surface-soft: #f4f7ff;
+  --surface-strong: #ffffff;
+  --arcade-cyan: #00a7d9;
+  --arcade-coral: #ff5c7a;
+  --arcade-lemon: #f5c542;
+  --arcade-lime: #27c777;
+  --arcade-violet: #6f63ff;
+  --felt: #006d8f;
+  --felt-deep: #151622;
+  --felt-bright: var(--arcade-cyan);
+  --brass: var(--arcade-lemon);
+  --gold: var(--arcade-lemon);
+  --gold-deep: #a66f00;
+  --crimson: var(--arcade-coral);
+  --crimson-deep: #c43655;
+  --navy: var(--ink);
+  --blue: var(--arcade-cyan);
+  --green: var(--arcade-lime);
+  --red: var(--arcade-coral);
+  --line: rgba(21, 22, 34, 0.12);
+  --line-strong: rgba(21, 22, 34, 0.22);
+  --line-cyan: rgba(0, 167, 217, 0.34);
+  --line-coral: rgba(255, 92, 122, 0.32);
+  --line-lemon: rgba(245, 197, 66, 0.38);
+  --shadow: 0 16px 44px rgba(21, 22, 34, 0.12);
+  --stage-shadow: 0 22px 70px rgba(21, 22, 34, 0.16);
+  --radius: 8px;
+}
+
+html {
+  background: #eef3ff;
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(244, 247, 255, 0.92) 44%, rgba(233, 240, 255, 0.98) 100%),
+    repeating-linear-gradient(90deg, rgba(0, 167, 217, 0.08) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(0deg, rgba(111, 99, 255, 0.07) 0 1px, transparent 1px 56px) !important;
+  color: var(--ink) !important;
+}
+
+body::before {
+  background:
+    linear-gradient(115deg, transparent 0 13%, rgba(0, 167, 217, 0.16) 13% 13.45%, transparent 13.45% 43%, rgba(245, 197, 66, 0.15) 43% 43.45%, transparent 43.45% 100%),
+    linear-gradient(245deg, transparent 0 24%, rgba(255, 92, 122, 0.13) 24% 24.5%, transparent 24.5% 62%, rgba(39, 199, 119, 0.12) 62% 62.45%, transparent 62.45% 100%),
+    repeating-linear-gradient(90deg, rgba(21, 22, 34, 0.035) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(0deg, rgba(21, 22, 34, 0.026) 0 1px, transparent 1px 48px) !important;
+  background-size: auto, auto, 48px 48px, 48px 48px !important;
+  opacity: 1 !important;
+}
+
+body::after {
+  display: block !important;
+  inset: auto -12vw -19vh;
+  height: 42vh;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.42) 0 2px, transparent 2px 30px),
+    linear-gradient(100deg, rgba(0, 167, 217, 0.2), rgba(111, 99, 255, 0.12) 40%, rgba(255, 92, 122, 0.16) 72%, rgba(245, 197, 66, 0.14)) !important;
+  clip-path: polygon(0 28%, 100% 0, 100% 100%, 0 100%) !important;
+  filter: none !important;
+  box-shadow: none !important;
+}
+
+.shell,
+.app-shell {
+  color: var(--ink);
+}
+
+.casino-hero {
+  border: 1px solid var(--line-cyan) !important;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.98) 0 58%, rgba(244, 247, 255, 0.86)),
+    repeating-linear-gradient(0deg, rgba(0, 167, 217, 0.09) 0 1px, transparent 1px 20px),
+    linear-gradient(135deg, rgba(0, 167, 217, 0.22), rgba(111, 99, 255, 0.12) 48%, rgba(255, 92, 122, 0.16)) !important;
+  box-shadow: var(--stage-shadow) !important;
+}
+
+.casino-hero::after {
+  right: -7rem;
+  bottom: 1.8rem;
+  width: min(42rem, 56vw);
+  height: 22rem;
+  border: 1px solid rgba(0, 167, 217, 0.34) !important;
+  border-radius: 0 !important;
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 167, 217, 0.15) 0 2px, transparent 2px 24px),
+    repeating-linear-gradient(0deg, rgba(255, 92, 122, 0.14) 0 2px, transparent 2px 24px),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(244, 247, 255, 0.44)) !important;
+  box-shadow: 18px 18px 0 rgba(245, 197, 66, 0.22), -18px -18px 0 rgba(39, 199, 119, 0.14) !important;
+  opacity: 0.88;
+  transform: rotate(-5deg) translate3d(var(--parallax-x), var(--parallax-y), 0) !important;
+}
+
+.marquee-band {
+  height: 4.2rem;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.42) 0 10px, transparent 10px 20px),
+    linear-gradient(90deg, var(--arcade-cyan), var(--arcade-violet) 46%, var(--arcade-coral)) !important;
+  border-bottom: 4px solid var(--arcade-lemon) !important;
+  box-shadow: 0 12px 26px rgba(0, 167, 217, 0.16) !important;
+}
+
+.casino-mark {
+  border-radius: var(--radius) !important;
+  border: 1px solid rgba(21, 22, 34, 0.12) !important;
+  background:
+    linear-gradient(135deg, var(--ink) 0 48%, var(--arcade-cyan) 48% 52%, var(--arcade-coral) 52% 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 10px 10px 0 rgba(245, 197, 66, 0.28) !important;
+}
+
+.hero-copy {
+  color: var(--ink);
+}
+
+.lede {
+  color: var(--ink-soft) !important;
+}
+
+.panel,
+.form-card,
+.control-card,
+.compact,
+.stage,
+.sportsbook,
+.player-seats,
+.leaderboard,
+.human-turn,
+.verdict {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius) !important;
+  color: var(--ink) !important;
+  box-shadow: var(--shadow) !important;
+  backdrop-filter: blur(12px) saturate(1.08);
+}
+
+.form-card,
+.cashier-card,
+.control-card {
+  border-top: 4px solid var(--arcade-cyan) !important;
+  background:
+    linear-gradient(180deg, #ffffff, var(--surface-soft)) !important;
+}
+
+.cashier-card::before {
+  inset: 0.55rem;
+  border: 1px dashed rgba(0, 167, 217, 0.28) !important;
+  border-radius: 6px;
+}
+
+.kicker {
+  color: var(--arcade-coral) !important;
+  letter-spacing: 0 !important;
+}
+
+.muted,
+.small,
+.fineprint {
+  color: var(--muted) !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+.phase,
+.market-title,
+.room-code {
+  color: var(--ink) !important;
+  letter-spacing: 0 !important;
+}
+
+button,
+.topbar button,
+.market-card button,
+.heckle-grid button {
+  border: 1px solid var(--line-strong) !important;
+  background:
+    linear-gradient(180deg, #ffffff, #eef5ff) !important;
+  color: var(--ink) !important;
+  box-shadow: inset 0 -2px 0 rgba(0, 167, 217, 0.12) !important;
+  text-shadow: none !important;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--line-cyan) !important;
+  box-shadow: inset 0 -2px 0 rgba(0, 167, 217, 0.22), 0 9px 20px rgba(0, 167, 217, 0.14) !important;
+  transform: translateY(-1px);
+}
+
+button.primary,
+.topbar button.host-toggle,
+.host-drawer summary {
+  background:
+    linear-gradient(135deg, var(--ink), #252845 58%, #303760) !important;
+  border-color: rgba(0, 167, 217, 0.45) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 -3px 0 rgba(0, 167, 217, 0.35), 0 12px 26px rgba(21, 22, 34, 0.18) !important;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.48 !important;
+  cursor: not-allowed !important;
+}
+
+input,
+select,
+textarea {
+  background: #ffffff !important;
+  border: 1px solid var(--line-strong) !important;
+  color: var(--ink) !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 167, 217, 0.03) !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--arcade-cyan) !important;
+  box-shadow: 0 0 0 3px rgba(0, 167, 217, 0.14) !important;
+}
+
+.topbar {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: rgba(0, 167, 217, 0.22) !important;
+  top: 0 !important;
+  z-index: 80 !important;
+  box-shadow: 0 14px 42px rgba(21, 22, 34, 0.12), inset 0 -3px 0 rgba(0, 167, 217, 0.12) !important;
+}
+
+.topbar-cell {
+  background:
+    linear-gradient(180deg, #ffffff, #f6f9ff) !important;
+  border: 1px solid var(--line) !important;
+}
+
+.dot.green {
+  background: var(--arcade-lime) !important;
+  box-shadow: 0 0 0 3px rgba(39, 199, 119, 0.18) !important;
+}
+
+.dot.gold {
+  background: var(--arcade-lemon) !important;
+  box-shadow: 0 0 0 3px rgba(245, 197, 66, 0.2) !important;
+}
+
+.dot.blue {
+  background: var(--arcade-cyan) !important;
+  box-shadow: 0 0 0 3px rgba(0, 167, 217, 0.16) !important;
+}
+
+.dot.red {
+  background: var(--arcade-coral) !important;
+  box-shadow: 0 0 0 3px rgba(255, 92, 122, 0.16) !important;
+}
+
+.host-badge,
+.seat-badge,
+.bot,
+.source-chip,
+.topic-meta span,
+.phase-chip,
+.bet-status,
+.heckle-chip,
+.setup-status,
+.turn-jury span,
+.jury-count,
+.audience-verdict-count {
+  background: #f0f4ff !important;
+  border: 1px solid rgba(21, 22, 34, 0.1) !important;
+  color: var(--ink-soft) !important;
+  box-shadow: none !important;
+}
+
+.host-badge,
+.seat-badge.active,
+.source-chip.human,
+.bet-status.open,
+.turn-jury span.positive {
+  background: #e6fbf2 !important;
+  border-color: rgba(39, 199, 119, 0.26) !important;
+  color: #11794b !important;
+}
+
+.source-chip.timeout,
+.heckle-chip,
+.turn-jury span.negative {
+  background: #fff0f4 !important;
+  border-color: rgba(255, 92, 122, 0.28) !important;
+  color: #c43655 !important;
+}
+
+.setup-progress {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 247, 255, 0.9)) !important;
+  border-color: rgba(0, 167, 217, 0.22) !important;
+  box-shadow: 0 14px 34px rgba(21, 22, 34, 0.1) !important;
+}
+
+.setup-steps::before {
+  background: rgba(21, 22, 34, 0.1) !important;
+}
+
+.setup-steps::after {
+  background:
+    linear-gradient(90deg, var(--arcade-cyan), var(--arcade-lemon), var(--arcade-coral), var(--arcade-violet)) !important;
+}
+
+.setup-chip,
+.setup-step.complete .setup-chip,
+.setup-step.current .setup-chip,
+.setup-step.upcoming .setup-chip {
+  background: #e9eefc !important;
+  color: var(--ink-soft) !important;
+  box-shadow: none !important;
+}
+
+.setup-step.complete .setup-chip {
+  background: var(--arcade-lime) !important;
+  color: #ffffff !important;
+}
+
+.setup-step.current .setup-chip {
+  background: var(--arcade-cyan) !important;
+  color: #ffffff !important;
+}
+
+.setup-label {
+  color: var(--ink) !important;
+}
+
+.stage.panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.94)) !important;
+  border-color: rgba(0, 167, 217, 0.24) !important;
+  box-shadow: var(--stage-shadow), inset 0 4px 0 rgba(0, 167, 217, 0.12) !important;
+}
+
+.topic-card,
+.topic-vote,
+.topic-vote-card,
+.jury-panel,
+.audience-verdict,
+.empty-state,
+.empty-transcript {
+  background:
+    linear-gradient(180deg, #ffffff, #f8fbff) !important;
+  border: 1px solid var(--line) !important;
+  color: var(--ink) !important;
+}
+
+.topic-card {
+  border-top: 4px solid var(--arcade-lemon) !important;
+}
+
+.topic-vote-count,
+.topic-vote-card-head strong,
+.topic-vote-result {
+  background: #e8f9ff !important;
+  border-color: rgba(0, 167, 217, 0.26) !important;
+  color: #006d8f !important;
+}
+
+.topic-vote-card.leading,
+.topic-vote-card.voted {
+  border-color: rgba(0, 167, 217, 0.34) !important;
+  background: #f3fbff !important;
+}
+
+.topic-vote-card.voted {
+  box-shadow: inset 4px 0 0 var(--arcade-cyan) !important;
+}
+
+.empty-state,
+.empty-transcript {
+  border-style: dashed !important;
+  border-color: rgba(0, 167, 217, 0.24) !important;
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 167, 217, 0.05) 0 1px, transparent 1px 26px),
+    #f8fbff !important;
+}
+
+.player-seats,
+.leaderboard,
+.sportsbook {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 247, 255, 0.9)) !important;
+}
+
+.debater,
+.market-card,
+.turn,
+.score-card,
+.mini-topic,
+.custom-debater-draft,
+.lobby-subsection li {
+  background: #ffffff !important;
+  border: 1px solid var(--line) !important;
+  color: var(--ink) !important;
+  box-shadow: none !important;
+}
+
+.debater {
+  border-left: 4px solid var(--arcade-cyan) !important;
+}
+
+.debater.debater_b {
+  border-left-color: var(--arcade-coral) !important;
+}
+
+.debater p,
+.stance,
+.market-card p,
+.market-card small,
+.turn .muted,
+.formatted-text,
+.formatted-text p,
+.streaming-text,
+.topic-vote-card-head,
+.topic-vote-actions span {
+  color: var(--ink-soft) !important;
+}
+
+.side-label {
+  background: #e8f9ff !important;
+  color: #006d8f !important;
+}
+
+.lobby-subsection {
+  border-top-color: var(--line) !important;
+}
+
+.market-card {
+  border-left: 4px solid var(--arcade-coral) !important;
+  background:
+    linear-gradient(180deg, #ffffff, #f8fbff) !important;
+}
+
+.market-card:hover {
+  border-color: var(--line-coral) !important;
+}
+
+.odds {
+  color: #c43655 !important;
+}
+
+.my-bets,
+.heckles {
+  border-top-color: var(--line) !important;
+}
+
+.turn {
+  border-left: 4px solid var(--arcade-violet) !important;
+  background:
+    linear-gradient(180deg, #ffffff, #f9fbff) !important;
+}
+
+.turn.debater_a {
+  border-left-color: var(--arcade-cyan) !important;
+}
+
+.turn.debater_b {
+  border-left-color: var(--arcade-coral) !important;
+}
+
+.turn-head {
+  gap: 0.4rem !important;
+}
+
+.jury-panel {
+  box-shadow: 0 12px 34px rgba(21, 22, 34, 0.08) !important;
+}
+
+.jury-momentum-labels,
+.jury-momentum-scores {
+  color: var(--muted) !important;
+}
+
+.jury-meter {
+  background: #edf2ff !important;
+  border-color: var(--line) !important;
+}
+
+.jury-meter-a {
+  background: linear-gradient(90deg, var(--arcade-cyan), var(--arcade-lime)) !important;
+}
+
+.jury-meter-b {
+  background: linear-gradient(90deg, var(--arcade-coral), var(--arcade-violet)) !important;
+}
+
+.jury-buttons button.active {
+  border-color: rgba(0, 167, 217, 0.46) !important;
+  background: #e8f9ff !important;
+  color: #006d8f !important;
+}
+
+.processing-strip {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: rgba(0, 167, 217, 0.22) !important;
+  box-shadow: 0 14px 34px rgba(21, 22, 34, 0.1) !important;
+}
+
+.host-drawer summary small {
+  color: rgba(255, 255, 255, 0.72) !important;
+}
+
+.host-drawer[open] {
+  box-shadow: 0 26px 72px rgba(21, 22, 34, 0.24) !important;
+}
+
+.host-drawer[open]::before {
+  background: rgba(21, 22, 34, 0.28) !important;
+}
+
+.host-drawer[open] .pit-console,
+.pit-console {
+  background: #ffffff !important;
+  border-color: rgba(0, 167, 217, 0.22) !important;
+  color: var(--ink) !important;
+}
+
+.control-card {
+  background:
+    linear-gradient(180deg, #ffffff, #f8fbff) !important;
+  border-color: var(--line) !important;
+}
+
+.mobile-section-nav {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid rgba(0, 167, 217, 0.24) !important;
+  box-shadow: 0 18px 44px rgba(21, 22, 34, 0.18), inset 0 3px 0 rgba(0, 167, 217, 0.14) !important;
+}
+
+.mobile-section-nav a,
+.mobile-section-nav button {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--muted) !important;
+  box-shadow: none !important;
+}
+
+.mobile-section-nav a.active,
+.mobile-section-nav button.active {
+  background: #e8f9ff !important;
+  color: #006d8f !important;
+}
+
+.chat-panel {
+  background:
+    linear-gradient(180deg, #ffffff, #f8fbff) !important;
+  border: 1px solid rgba(0, 167, 217, 0.22) !important;
+  color: var(--ink) !important;
+  box-shadow: 0 14px 36px rgba(21, 22, 34, 0.1) !important;
+}
+
+.chat-head,
+.chat-form {
+  border-color: var(--line) !important;
+}
+
+.chat-empty {
+  color: var(--muted) !important;
+}
+
+.chat-meta {
+  color: var(--muted) !important;
+}
+
+.chat-meta strong {
+  color: var(--ink) !important;
+}
+
+.chat-meta span {
+  background: #fff8dc !important;
+  border-color: rgba(245, 197, 66, 0.34) !important;
+  color: #7a5500 !important;
+}
+
+.chat-bubble {
+  background: #f0f4ff !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+
+.chat-message.mine .chat-bubble {
+  background: #e8f9ff !important;
+  border-color: rgba(0, 167, 217, 0.26) !important;
+}
+
+meter {
+  accent-color: var(--arcade-cyan);
+}
+
+@media (max-width: 800px) {
+  .casino-hero {
+    padding-top: 6rem;
+  }
+
+  .casino-hero::after {
+    width: 16rem;
+    height: 9rem;
+    right: -6rem;
+    bottom: 2rem;
+  }
+
+  .chat-panel {
+    box-shadow: 0 24px 70px rgba(21, 22, 34, 0.24) !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .casino-mark {
+    width: 4rem;
+    height: 4rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  body::after,
+  .casino-hero::after {
+    transform: none !important;
+  }
+}
