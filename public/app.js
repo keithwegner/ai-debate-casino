@@ -364,6 +364,7 @@ function mobileSectionNavHtml(room, isHost, loop) {
       ${items.map(({ id, label, href, ariaLabel }) => `<a class="${active === id ? 'active' : ''}" href="${href}" aria-label="${h(ariaLabel)}"><span>${h(label)}</span>${navBadgeHtml(id, loop)}</a>`).join('')}
       <button type="button" class="${active === 'chat' ? 'active' : ''}" data-toggle-chat><span>Chat</span>${navBadgeHtml('chat', loop)}</button>
       ${isHost ? `<button type="button" class="${active === 'host' ? 'active' : ''}" data-toggle-host><span>Host</span>${navBadgeHtml('host', loop)}</button>` : ''}
+      <button type="button" class="mobile-exit" data-action="leaveRoom" aria-label="Leave room"><span>Exit</span></button>
     </nav>`;
 }
 
@@ -383,6 +384,26 @@ function activeNavSection() {
   if (state.ui.hostConsoleOpen) return 'host';
   if (state.ui.roomTab === 'chat') return 'chat';
   return state.ui.activeSection || 'live';
+}
+
+function navItemSection(el) {
+  const href = el.getAttribute?.('href') || '';
+  if (href.startsWith('#')) return href.slice(1);
+  if (el.hasAttribute?.('data-toggle-chat')) return 'chat';
+  if (el.hasAttribute?.('data-toggle-host')) return 'host';
+  return '';
+}
+
+function syncMobileNavActiveState() {
+  const active = activeNavSection();
+  for (const el of document.querySelectorAll('.mobile-section-nav a[href^="#"], .mobile-section-nav button')) {
+    const section = navItemSection(el);
+    if (!section) continue;
+    const isActive = section === active;
+    el.classList?.toggle('active', isActive);
+    if (isActive) el.setAttribute?.('aria-current', 'page');
+    else el.removeAttribute?.('aria-current');
+  }
 }
 
 function topBarHtml(room, me, isHost) {
@@ -1116,7 +1137,7 @@ function sportsbookHtml(room, me) {
     ${bettingWindowPanelHtml(betting)}
     ${unavailable ? `<p class="bet-blocked">${h(unavailable)}</p>` : ''}
     ${isHost ? '' : `<label>Bet amount</label><input id="betAmount" type="number" min="10" max="500" step="10" value="100" ${canBet ? '' : 'disabled'} />`}
-    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small><strong>Result rule:</strong> ${h(m.settleRule)}</small>${isHost ? '' : `<button data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Place bet</button>`}</article>`).join('')}</div>
+    <div class="markets">${room.markets.map((m) => `<article class="market-card"><div class="market-title">${h(m.label)}</div><div class="odds">${Number(m.odds).toFixed(2)}x</div><p>${h(m.rationale)}</p><small><strong>Result rule:</strong> ${h(m.settleRule)}</small>${isHost ? '' : `<button type="button" data-action="placeBet" data-market-id="${h(m.id)}" ${canBet ? '' : 'disabled'}>Place bet</button>`}</article>`).join('')}</div>
     <p class="fineprint">Fake chips only. No cash value. No real-money wagering.</p>`;
 }
 
@@ -1654,6 +1675,7 @@ function bindRoom() {
   bindTopicVote();
   bindChat();
   bindResultSpotlight();
+  bindResultReview();
   bindSectionNav();
   for (const el of document.querySelectorAll('[data-room-tab]')) {
     el.addEventListener('click', () => {
@@ -1711,10 +1733,17 @@ function bindRoom() {
 
 function bindSectionNav() {
   for (const el of document.querySelectorAll('.mobile-section-nav a[href^="#"]')) {
-    el.addEventListener('click', () => {
-      state.ui.activeSection = el.getAttribute('href').slice(1) || 'live';
-      if (state.ui.roomTab === 'chat') state.ui.roomTab = 'seats';
-      render();
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      const section = el.getAttribute('href').slice(1) || 'live';
+      state.ui.activeSection = section;
+      if (state.ui.roomTab === 'chat') {
+        state.ui.roomTab = 'seats';
+        render();
+      } else {
+        syncMobileNavActiveState();
+      }
+      requestAnimationFrame(() => document.getElementById(section)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     });
   }
   if (state.ui.navScrollBound) return;
@@ -1743,7 +1772,7 @@ function syncActiveSectionFromViewport() {
     .sort((a, b) => a.distance - b.distance)[0]?.id || 'live';
   if (current !== state.ui.activeSection) {
     state.ui.activeSection = current;
-    render();
+    syncMobileNavActiveState();
   }
 }
 
@@ -1857,6 +1886,17 @@ function bindResultSpotlight() {
     const key = resultSpotlightKey(state.room);
     if (!key || state.ui.dismissedResultSpotlightKey === key) return;
     dismissResultSpotlight(false);
+  });
+}
+
+function bindResultReview() {
+  const details = document.getElementById('round-result');
+  if (!details || typeof details.open !== 'boolean') return;
+  details.addEventListener('toggle', () => {
+    const key = resultSpotlightKey(state.room);
+    if (!key) return;
+    if (details.open) state.ui.resultReviewOpenKey = key;
+    else if (state.ui.resultReviewOpenKey === key) state.ui.resultReviewOpenKey = '';
   });
 }
 

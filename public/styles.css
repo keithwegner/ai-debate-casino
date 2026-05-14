@@ -2322,11 +2322,11 @@ blockquote {
   }
 
   .mobile-section-nav.has-host {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .mobile-section-nav.player-only {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .mobile-section-nav a,
@@ -3815,11 +3815,11 @@ textarea:focus {
   }
 
   .mobile-section-nav.has-host {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .mobile-section-nav.player-only {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .sportsbook {
@@ -5098,6 +5098,10 @@ textarea:focus {
 .mobile-section-nav button.active {
   background: #e8f9ff !important;
   color: #006d8f !important;
+}
+
+.mobile-section-nav .mobile-exit {
+  color: #9f2339 !important;
 }
 
 .chat-panel {
