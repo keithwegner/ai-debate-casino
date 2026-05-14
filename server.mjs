@@ -96,13 +96,28 @@ const HECKLE_CARDS = [
   { id: 'animal_callback', label: 'Animal Callback', cost: 25, instruction: 'Use a memorable animal comparison or animal callback.' },
 ];
 
-const JURY_REACTIONS = [
-  { id: 'strong_logic', label: 'Strong logic', sentiment: 'positive' },
-  { id: 'funny', label: 'Funny', sentiment: 'positive' },
-  { id: 'great_rebuttal', label: 'Great rebuttal', sentiment: 'positive' },
-  { id: 'dodged_point', label: 'Dodged the point', sentiment: 'negative' },
-  { id: 'weak_argument', label: 'Weak argument', sentiment: 'negative' },
-];
+const JURY_REACTION_GROUPS = {
+  thumb: [
+    { id: 'thumb_down', group: 'thumb', emoji: '👎', label: 'Thumbs down', sentiment: 'negative', score: -1 },
+    { id: 'thumb_up', group: 'thumb', emoji: '👍', label: 'Thumbs up', sentiment: 'positive', score: 1 },
+    { id: 'double_thumb', group: 'thumb', emoji: '👍👍', label: 'Double thumbs up', sentiment: 'positive', score: 2 },
+  ],
+  emoji: [
+    { id: 'laugh', group: 'emoji', emoji: '😂', label: 'Funny', sentiment: 'positive', score: 1 },
+    { id: 'fire', group: 'emoji', emoji: '🔥', label: 'Fire', sentiment: 'positive', score: 1 },
+    { id: 'thinking', group: 'emoji', emoji: '🤔', label: 'Thinking', sentiment: 'neutral', score: 0 },
+    { id: 'clap', group: 'emoji', emoji: '👏', label: 'Applause', sentiment: 'positive', score: 1 },
+    { id: 'skull', group: 'emoji', emoji: '💀', label: 'Dead', sentiment: 'positive', score: 1 },
+  ],
+};
+const JURY_REACTIONS = [...JURY_REACTION_GROUPS.thumb, ...JURY_REACTION_GROUPS.emoji];
+const LEGACY_JURY_REACTIONS = {
+  strong_logic: 'clap',
+  funny: 'laugh',
+  great_rebuttal: 'fire',
+  dodged_point: 'thinking',
+  weak_argument: 'thumb_down',
+};
 
 function loadDotEnv(file) {
   if (!fs.existsSync(file)) return;
@@ -705,7 +720,7 @@ async function handleApi(req, res, url) {
 
     if (method === 'POST' && action === 'jury') {
       const body = await readJson(req);
-      const reaction = submitJuryReaction(room, body.playerId, body.turnId, body.reactionId);
+      const reaction = submitJuryReaction(room, body.playerId, body.turnId, body.group, body.reactionId);
       return sendJson(res, 201, { reaction, room: publicRoom(room) });
     }
 
@@ -1146,32 +1161,44 @@ function clearChatMessages(room) {
   pushComment(room, 'Room chat cleared.');
 }
 
-function submitJuryReaction(room, playerId, turnId, reactionId) {
-  if (!['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) throw apiError(400, 'Jury reactions open once the debate starts.');
+function submitJuryReaction(room, playerId, turnId, group, reactionId) {
+  if (room.status !== 'DEBATE') throw apiError(400, 'Jury reactions are open only during the live debate.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
   if (player.isBot) throw apiError(400, 'Automated players cannot sit on the jury.');
   if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot sit on the jury in their own round.');
   const turn = juryTurnById(room, turnId);
   if (!turn) throw apiError(404, 'Jury target turn not found.');
-  const reaction = JURY_REACTIONS.find((r) => r.id === reactionId);
+  const reaction = findJuryReaction(group, reactionId);
   if (!reaction) throw apiError(400, 'Unknown jury reaction.');
-  const existingIndex = (room.juryReactions || []).findIndex((r) => r.playerId === player.id && r.turnId === turn.id);
+  const reactions = room.juryReactions || [];
+  room.juryReactions = reactions;
+  const existingIndex = reaction.group === 'thumb'
+    ? reactions.findIndex((r) => r.playerId === player.id && r.turnId === turn.id && reactionGroupForEntry(r) === 'thumb')
+    : reactions.findIndex((r) => r.playerId === player.id && r.turnId === turn.id && reactionGroupForEntry(r) === 'emoji' && normalizedReactionId(r) === reaction.id);
+  if (existingIndex >= 0 && normalizedReactionId(reactions[existingIndex]) === reaction.id) {
+    const [removed] = reactions.splice(existingIndex, 1);
+    pushComment(room, `${player.displayName} cleared ${turn.speakerName}'s ${reaction.label} reaction.`);
+    return { ...removed, group: reaction.group, reactionId: reaction.id, removed: true };
+  }
   const entry = {
-    id: existingIndex >= 0 ? room.juryReactions[existingIndex].id : id('jury_'),
+    id: existingIndex >= 0 ? reactions[existingIndex].id : id('jury_'),
     roomId: room.id,
     playerId: player.id,
     displayName: player.displayName,
     turnId: turn.id,
     speakerDebaterId: turn.speakerDebaterId,
+    group: reaction.group,
     reactionId: reaction.id,
+    emoji: reaction.emoji,
     label: reaction.label,
     sentiment: reaction.sentiment,
-    createdAt: existingIndex >= 0 ? room.juryReactions[existingIndex].createdAt : now(),
+    score: reaction.score,
+    createdAt: existingIndex >= 0 ? reactions[existingIndex].createdAt : now(),
     updatedAt: now(),
   };
-  if (existingIndex >= 0) room.juryReactions[existingIndex] = entry;
-  else room.juryReactions.push(entry);
+  if (existingIndex >= 0) reactions[existingIndex] = entry;
+  else reactions.push(entry);
   pushComment(room, `${player.displayName} marked ${turn.speakerName}'s turn: ${reaction.label}.`);
   return entry;
 }
@@ -1179,14 +1206,12 @@ function submitJuryReaction(room, playerId, turnId, reactionId) {
 function juryTurnById(room, turnId) {
   const idToFind = cleanText(turnId, 100);
   if (!idToFind) return null;
-  if (room.streamingTurn?.id === idToFind) return room.streamingTurn;
   return room.turns.find((t) => t.id === idToFind) || null;
 }
 
 function jurySummary(room) {
-  const totals = Object.fromEntries(['debater_a', 'debater_b'].map((debaterId) => [debaterId, { debaterId, positive: 0, negative: 0, net: 0, total: 0 }]));
+  const totals = Object.fromEntries(['debater_a', 'debater_b'].map((debaterId) => [debaterId, { debaterId, positive: 0, negative: 0, neutral: 0, net: 0, total: 0 }]));
   const turnMap = new Map((room.turns || []).map((turn) => [turn.id, turn]));
-  if (room.streamingTurn?.id) turnMap.set(room.streamingTurn.id, room.streamingTurn);
   const byTurn = new Map();
   for (const turn of turnMap.values()) {
     byTurn.set(turn.id, {
@@ -1194,26 +1219,33 @@ function jurySummary(room) {
       phase: turn.phase,
       speakerDebaterId: turn.speakerDebaterId,
       speakerName: turn.speakerName,
-      counts: Object.fromEntries(JURY_REACTIONS.map((reaction) => [reaction.id, 0])),
+      counts: juryReactionCounts(),
+      groups: juryReactionGroupCounts(),
       positive: 0,
       negative: 0,
+      neutral: 0,
       net: 0,
       total: 0,
     });
   }
   for (const reaction of room.juryReactions || []) {
-    const option = JURY_REACTIONS.find((r) => r.id === reaction.reactionId);
+    const option = juryReactionForEntry(reaction);
     const turn = byTurn.get(reaction.turnId);
     if (!option || !turn) continue;
     turn.counts[option.id] = (turn.counts[option.id] || 0) + 1;
+    turn.groups[option.group][option.id] = (turn.groups[option.group][option.id] || 0) + 1;
     const total = totals[reaction.speakerDebaterId];
     if (!total) continue;
-    if (option.sentiment === 'negative') {
-      turn.negative += 1;
-      total.negative += 1;
+    const score = Number(option.score || 0);
+    if (score < 0) {
+      turn.negative += Math.abs(score);
+      total.negative += Math.abs(score);
+    } else if (score > 0) {
+      turn.positive += score;
+      total.positive += score;
     } else {
-      turn.positive += 1;
-      total.positive += 1;
+      turn.neutral += 1;
+      total.neutral += 1;
     }
     turn.total += 1;
     total.total += 1;
@@ -1228,12 +1260,48 @@ function jurySummary(room) {
   const crowdLeader = room.debaters.find((d) => d.id === crowdLeaderDebaterId);
   return {
     options: JURY_REACTIONS,
+    groups: JURY_REACTION_GROUPS,
     reactionsTotal: (room.juryReactions || []).length,
     totals,
     turns: [...byTurn.values()],
     crowdLeaderDebaterId,
     crowdLeaderName: crowdLeader?.displayName || '',
   };
+}
+
+function juryReactionCounts() {
+  return Object.fromEntries(JURY_REACTIONS.map((reaction) => [reaction.id, 0]));
+}
+
+function juryReactionGroupCounts() {
+  return Object.fromEntries(Object.entries(JURY_REACTION_GROUPS).map(([group, options]) => [
+    group,
+    Object.fromEntries(options.map((reaction) => [reaction.id, 0])),
+  ]));
+}
+
+function findJuryReaction(group, reactionId) {
+  const cleanGroup = cleanText(group, 20);
+  const cleanReactionId = cleanText(reactionId, 80);
+  if (!['thumb', 'emoji'].includes(cleanGroup)) return null;
+  return JURY_REACTION_GROUPS[cleanGroup].find((reaction) => reaction.id === cleanReactionId) || null;
+}
+
+function juryReactionForEntry(entry) {
+  const group = reactionGroupForEntry(entry);
+  const reactionId = normalizedReactionId(entry);
+  return JURY_REACTION_GROUPS[group]?.find((reaction) => reaction.id === reactionId) || null;
+}
+
+function reactionGroupForEntry(entry) {
+  if (entry?.group === 'thumb' || entry?.group === 'emoji') return entry.group;
+  const mapped = LEGACY_JURY_REACTIONS[entry?.reactionId];
+  if (mapped) return JURY_REACTIONS.find((reaction) => reaction.id === mapped)?.group || '';
+  return JURY_REACTIONS.find((reaction) => reaction.id === entry?.reactionId)?.group || '';
+}
+
+function normalizedReactionId(entry) {
+  return LEGACY_JURY_REACTIONS[entry?.reactionId] || entry?.reactionId || '';
 }
 
 function audienceJuryVerdict(room, winnerDebaterId, generatedSummary = '') {

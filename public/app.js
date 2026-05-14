@@ -27,6 +27,9 @@ let state = {
     navFrame: 0,
     bettingExpiryRenderKey: '',
     scrollToLiveAfterRender: false,
+    dismissedResultSpotlightKey: '',
+    resultReviewOpenKey: '',
+    resultSpotlightEscBound: false,
   },
 };
 
@@ -343,6 +346,7 @@ function roomHtml(room) {
       </section>
       ${mobileSectionNavHtml(room, isHost, loop)}
       ${isHost ? hostControlsHtml(room) : ''}
+      ${resultSpotlightHtml(room)}
     </main>`;
 }
 
@@ -764,63 +768,48 @@ function humanTurnHtml(room, me) {
 
 function juryHtml(room, me) {
   if (!['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) return '';
-  const target = juryTargetTurn(room);
-  const readableTarget = target && juryTurnIsReadable(target) ? target : null;
   const hasRecordedRead = Boolean((room.jury?.reactionsTotal || 0) > 0);
-  if (!readableTarget && !hasRecordedRead) return '';
-  const reactions = juryReactionOptions(room);
-  const existing = readableTarget ? (room.juryReactions || []).find((r) => r.playerId === me?.id && r.turnId === readableTarget.id) : null;
+  const hasTranscript = Boolean((room.turns || []).length || room.streamingTurn?.text);
+  if (!hasTranscript && !hasRecordedRead) return '';
   const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
-  const isAudienceMember = Boolean(me?.id && !me.isBot && !isHumanDebater);
-  const canReact = Boolean(readableTarget && room.status === 'DEBATE' && isAudienceMember);
-  const showButtons = Boolean(readableTarget && (!me?.id || isAudienceMember));
-  const message = juryHelpText(room, readableTarget, me, isHumanDebater, existing, hasRecordedRead);
+  const message = juryHelpText(room, me, isHumanDebater, hasRecordedRead);
   return `
     <section class="jury-panel panel inset" aria-label="Audience jury">
       <div class="jury-head">
-        <div><div class="kicker">Audience jury</div><h3>${readableTarget ? `React to ${h(readableTarget.speakerName)}` : 'Audience read closed'}</h3></div>
+        <div><div class="kicker">Audience jury</div><h3>Audience read</h3></div>
         <div class="jury-count">${h(room.jury?.reactionsTotal || 0)} reads</div>
       </div>
       ${juryMomentumHtml(room)}
       <p class="muted small">${h(message)}</p>
-      ${showButtons
-        ? `<div class="jury-buttons" aria-label="${h(canReact ? 'Audience reactions open' : 'Audience reactions unavailable')}">${reactions.map((reaction) => `<button data-action="submitJuryReaction" data-turn-id="${h(readableTarget?.id || '')}" data-reaction-id="${h(reaction.id)}" class="${existing?.reactionId === reaction.id ? 'active' : ''}" ${canReact ? '' : 'disabled'}>${h(reaction.label)}</button>`).join('')}</div>`
-        : `<div class="jury-status">${h(message)}</div>`}
     </section>`;
 }
 
-function juryTargetTurn(room) {
-  if (room.streamingTurn?.id) return room.streamingTurn;
-  return [...(room.turns || [])].at(-1) || null;
+function juryReactionGroups(room) {
+  const groups = room.jury?.groups || {};
+  return {
+    thumb: Array.isArray(groups.thumb) && groups.thumb.length ? groups.thumb : [
+      { id: 'thumb_down', group: 'thumb', emoji: '👎', label: 'Thumbs down', sentiment: 'negative', score: -1 },
+      { id: 'thumb_up', group: 'thumb', emoji: '👍', label: 'Thumbs up', sentiment: 'positive', score: 1 },
+      { id: 'double_thumb', group: 'thumb', emoji: '👍👍', label: 'Double thumbs up', sentiment: 'positive', score: 2 },
+    ],
+    emoji: Array.isArray(groups.emoji) && groups.emoji.length ? groups.emoji : [
+      { id: 'laugh', group: 'emoji', emoji: '😂', label: 'Funny', sentiment: 'positive', score: 1 },
+      { id: 'fire', group: 'emoji', emoji: '🔥', label: 'Fire', sentiment: 'positive', score: 1 },
+      { id: 'thinking', group: 'emoji', emoji: '🤔', label: 'Thinking', sentiment: 'neutral', score: 0 },
+      { id: 'clap', group: 'emoji', emoji: '👏', label: 'Applause', sentiment: 'positive', score: 1 },
+      { id: 'skull', group: 'emoji', emoji: '💀', label: 'Dead', sentiment: 'positive', score: 1 },
+    ],
+  };
 }
 
-function juryTurnIsReadable(turn) {
-  const text = String(turn?.text || '').replace(/\s+/g, ' ').trim();
-  if (!text) return false;
-  const wordCount = text.split(' ').filter(Boolean).length;
-  return text.length >= 80 || wordCount >= 14;
-}
-
-function juryReactionOptions(room) {
-  return room.jury?.options || [
-    { id: 'strong_logic', label: 'Strong logic', sentiment: 'positive' },
-    { id: 'funny', label: 'Funny', sentiment: 'positive' },
-    { id: 'great_rebuttal', label: 'Great rebuttal', sentiment: 'positive' },
-    { id: 'dodged_point', label: 'Dodged the point', sentiment: 'negative' },
-    { id: 'weak_argument', label: 'Weak argument', sentiment: 'negative' },
-  ];
-}
-
-function juryHelpText(room, target, me, isHumanDebater, existing, hasRecordedRead) {
+function juryHelpText(room, me, isHumanDebater, hasRecordedRead) {
   if (isHumanDebater) return 'You are debating this round, so the jury bench is for the audience.';
-  if (!target) return hasRecordedRead
-    ? 'Audience reactions are closed. The jury meter stays up so everyone can compare the crowd read with the judge.'
-    : 'The jury stays hidden until there is a readable turn on stage.';
-  if (!me?.id) return 'Join the room to sit on the audience jury.';
+  if (!me?.id) return 'Join the room to react from the statement controls.';
   if (me.isBot) return 'Automated players cannot sit on the jury.';
-  if (room.status !== 'DEBATE') return 'This turn is readable, but reactions are locked while the judge and settlement finish.';
-  if (existing) return `Your read: ${existing.label}. You can change it while the debate is live.`;
-  return 'Audience reactions unlock once a turn is readable. One reaction per player per turn while the debate is live.';
+  if (room.status !== 'DEBATE') return hasRecordedRead
+    ? 'Audience reactions are closed. The jury meter stays up so everyone can compare the crowd read with the judge.'
+    : 'Audience reactions are closed while the judge and settlement finish.';
+  return 'Use the controls pinned to each completed statement. Thumbs are exclusive; emoji reactions toggle independently.';
 }
 
 function juryMomentumHtml(room) {
@@ -912,19 +901,57 @@ function transcriptHtml(room) {
 
 function turnHtml(t, room, options = {}) {
   const body = t.streaming ? streamingTurnBodyHtml(t.text) : (t.text ? formattedTextHtml(t.text) : '<p class="typing-placeholder">Preparing response...</p>');
-  return `<article class="turn ${t.speakerDebaterId} ${t.streaming ? 'streaming-turn' : ''} ${options.featured ? 'featured-turn' : ''}" data-turn-id="${h(t.id || '')}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div><div class="turn-body" data-turn-body="${h(t.id || '')}">${body}</div>${turnJuryHtml(t, room)}</article>`;
+  return `<article class="turn ${t.speakerDebaterId} ${t.streaming ? 'streaming-turn' : ''} ${options.featured ? 'featured-turn' : ''}" data-turn-id="${h(t.id || '')}"><div class="turn-head"><span class="phase-chip">${h(t.phase)}</span><strong>${h(t.speakerName)}</strong><span class="muted">${h(t.persona)} · ${h(t.sideLabel)}</span>${turnSourceHtml(t)}${t.heckleLabel ? `<span class="heckle-chip">${h(t.heckleLabel)}</span>` : ''}</div><div class="turn-body" data-turn-body="${h(t.id || '')}">${body}</div>${turnReactionControlsHtml(t, room)}</article>`;
 }
 
-function turnJuryHtml(turn, room) {
+function turnReactionControlsHtml(turn, room) {
+  if (turn.streaming || !turn.id) return '';
+  const me = currentPlayer(room);
+  const isHumanDebater = Boolean(humanDebaterForCurrentPlayer(room, me));
+  const canReact = Boolean(room.status === 'DEBATE' && me?.id && !me.isBot && !isHumanDebater);
+  const groups = juryReactionGroups(room);
+  const myReactions = (room.juryReactions || []).filter((reaction) => reaction.playerId === me?.id && reaction.turnId === turn.id);
+  const thumbButtons = groups.thumb.map((reaction) => reactionButtonHtml(turn, room, reaction, myReactions, canReact)).join('');
+  const emojiButtons = groups.emoji.map((reaction) => reactionButtonHtml(turn, room, reaction, myReactions, canReact)).join('');
+  const totalEmojiCount = groups.emoji.reduce((sum, reaction) => sum + turnReactionCount(turn, room, reaction), 0);
+  const disabled = canReact ? '' : ' aria-disabled="true"';
+  return `
+    <div class="turn-reactions" aria-label="Statement reactions">
+      <div class="turn-thumbs" aria-label="Thumb reactions">${thumbButtons}</div>
+      <details class="turn-emoji-menu"${disabled}>
+        <summary><span>Emoji</span><b>${h(totalEmojiCount)}</b></summary>
+        <div class="turn-emoji-options" aria-label="Emoji reactions">${emojiButtons}</div>
+      </details>
+    </div>`;
+}
+
+function reactionButtonHtml(turn, room, reaction, myReactions, canReact) {
+  const active = myReactions.some((entry) => normalizedReactionGroup(entry, reaction.group) === reaction.group && normalizedReactionId(entry) === reaction.id);
+  const count = turnReactionCount(turn, room, reaction);
+  return `<button type="button" class="turn-reaction ${reaction.group} ${active ? 'active' : ''}" data-action="submitJuryReaction" data-turn-id="${h(turn.id)}" data-reaction-group="${h(reaction.group)}" data-reaction-id="${h(reaction.id)}" aria-label="${h(reaction.label)}" aria-pressed="${active ? 'true' : 'false'}" ${canReact ? '' : 'disabled'}><span aria-hidden="true">${h(reaction.emoji || reaction.label)}</span><b>${h(count)}</b></button>`;
+}
+
+function turnReactionCount(turn, room, reaction) {
   const summary = (room.jury?.turns || []).find((item) => item.turnId === turn.id);
-  if (!summary?.total) return '';
-  const options = juryReactionOptions(room);
-  const chips = options
-    .map((option) => ({ option, count: summary.counts?.[option.id] || 0 }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 3);
-  return `<div class="turn-jury">${chips.map(({ option, count }) => `<span class="${option.sentiment === 'negative' ? 'negative' : 'positive'}">${h(option.label)} ${h(count)}</span>`).join('')}</div>`;
+  return summary?.groups?.[reaction.group]?.[reaction.id] || summary?.counts?.[reaction.id] || 0;
+}
+
+function normalizedReactionGroup(entry, fallback = '') {
+  if (entry?.group === 'thumb' || entry?.group === 'emoji') return entry.group;
+  if (['strong_logic', 'funny', 'great_rebuttal', 'dodged_point'].includes(entry?.reactionId)) return 'emoji';
+  if (entry?.reactionId === 'weak_argument') return 'thumb';
+  return fallback;
+}
+
+function normalizedReactionId(entry) {
+  const legacy = {
+    strong_logic: 'clap',
+    funny: 'laugh',
+    great_rebuttal: 'fire',
+    dodged_point: 'thinking',
+    weak_argument: 'thumb_down',
+  };
+  return legacy[entry?.reactionId] || entry?.reactionId || '';
 }
 
 function streamingTurnBodyHtml(text) {
@@ -953,18 +980,43 @@ function verdictHtml(room) {
       <div class="callouts"><div><div class="kicker">Best line</div><blockquote>${formattedTextHtml(v.bestLine?.quote || '')}</blockquote></div><div><div class="kicker">Worst argument</div>${formattedTextHtml(v.worstArgument?.summary || '')}</div></div>
       ${props ? `<h4>Bet results</h4><table><tbody>${props}</tbody></table>` : ''}`;
   if (room.status === 'RESULTS') {
+    const open = state.ui.resultReviewOpenKey === resultSpotlightKey(room) ? ' open' : '';
     return `
-      <details class="verdict panel inset result-review">
+      <details id="round-result" class="verdict panel inset result-review"${open}>
         <summary><span>Round result</span><strong>${h(v.winnerName)} wins by ${h(v.margin)} margin</strong></summary>
         <div class="winner-banner">${h(v.winnerName)} wins by ${h(v.margin)} margin</div>
         ${body}
       </details>`;
   }
   return `
-    <section class="verdict panel inset">
+    <section id="round-result" class="verdict panel inset">
       <div class="winner-banner">${h(v.winnerName)} wins by ${h(v.margin)} margin</div>
       ${body}
     </section>`;
+}
+
+function resultSpotlightHtml(room) {
+  const key = resultSpotlightKey(room);
+  if (!key || state.ui.dismissedResultSpotlightKey === key) return '';
+  const verdict = room.verdict;
+  return `
+    <div class="result-spotlight" role="dialog" aria-modal="true" aria-labelledby="resultSpotlightTitle">
+      <button type="button" class="result-spotlight-backdrop" data-result-spotlight="collapse" aria-label="Collapse result spotlight"></button>
+      <section class="result-spotlight-modal">
+        <div class="kicker">Judge verdict</div>
+        <h2 id="resultSpotlightTitle">${h(verdict.winnerName)} wins</h2>
+        <p>${h(verdict.winnerName)} wins by ${h(verdict.margin)} margin.</p>
+        <div class="result-spotlight-actions">
+          <button type="button" class="primary" data-result-spotlight="view">View details</button>
+          <button type="button" data-result-spotlight="collapse">Collapse</button>
+        </div>
+      </section>
+    </div>`;
+}
+
+function resultSpotlightKey(room) {
+  if (room?.status !== 'RESULTS' || !room.verdict?.winnerDebaterId) return '';
+  return [room.id, room.verdict.winnerDebaterId, room.verdict.margin || '', room.settlements?.settledAt || room.updatedAt || ''].join(':');
 }
 
 function audienceVsJudgeHtml(room) {
@@ -1166,7 +1218,15 @@ function chatHtml(room, me, isHost, embedded = false) {
         ${messages.length ? messages.map((message) => chatMessageHtml(message, me)).join('') : '<div class="chat-empty">No messages yet.</div>'}
       </div>
       <form id="chatForm" class="chat-form">
-        <textarea id="chatText" rows="1" maxlength="500" placeholder="Message the room" ${canSend ? '' : 'disabled'}>${h(state.ui.chatDraft)}</textarea>
+        <div class="chat-composer">
+          <div class="chat-toolbar" aria-label="Chat tools">
+            <button type="button" data-chat-format="bold" aria-label="Bold"><strong>B</strong></button>
+            <button type="button" data-chat-format="italic" aria-label="Italic"><em>I</em></button>
+            <button type="button" data-chat-format="underline" aria-label="Underline"><u>U</u></button>
+            ${chatEmojiOptions().map((emoji) => `<button type="button" data-chat-emoji="${h(emoji)}" aria-label="Insert ${h(emoji)}">${h(emoji)}</button>`).join('')}
+          </div>
+          <textarea id="chatText" rows="1" maxlength="500" placeholder="Message the room" ${canSend ? '' : 'disabled'}>${h(state.ui.chatDraft)}</textarea>
+        </div>
         <button type="submit" class="primary" ${canSend ? '' : 'disabled'}>${buttonContent('sendChatMessage', 'Send')}</button>
       </form>
     </section>`;
@@ -1177,8 +1237,29 @@ function chatMessageHtml(message, me) {
   return `
     <article class="chat-message ${own ? 'mine' : ''}">
       <div class="chat-meta"><strong>${h(message.displayName || 'Player')}</strong>${message.isHost ? '<span>Host</span>' : ''}<time>${h(formatChatTime(message.createdAt))}</time></div>
-      <div class="chat-bubble">${h(message.text || '')}</div>
+      <div class="chat-bubble">${chatFormattedTextHtml(message.text || '')}</div>
     </article>`;
+}
+
+function chatEmojiOptions() {
+  return ['😂', '🔥', '🤔', '👏', '💀'];
+}
+
+function chatFormattedTextHtml(text) {
+  const value = String(text || '');
+  const marker = /(\*\*([^*\n]{1,160})\*\*|__([^_\n]{1,160})__|_([^_\n]{1,160})_)/g;
+  let html = '';
+  let last = 0;
+  for (const match of value.matchAll(marker)) {
+    html += h(value.slice(last, match.index));
+    const content = h(match[2] || match[3] || match[4] || '');
+    if (match[2]) html += `<strong>${content}</strong>`;
+    else if (match[3]) html += `<u>${content}</u>`;
+    else html += `<em>${content}</em>`;
+    last = match.index + match[0].length;
+  }
+  html += h(value.slice(last));
+  return html;
 }
 
 function formatChatTime(value) {
@@ -1572,6 +1653,7 @@ function bindRoom() {
   bindHostConsole();
   bindTopicVote();
   bindChat();
+  bindResultSpotlight();
   bindSectionNav();
   for (const el of document.querySelectorAll('[data-room-tab]')) {
     el.addEventListener('click', () => {
@@ -1618,7 +1700,7 @@ function bindRoom() {
   }
   for (const el of document.querySelectorAll('[data-action]')) {
     el.addEventListener('click', async (event) => {
-      await handleAction(event.currentTarget.dataset.action, { marketId: event.currentTarget.dataset.marketId, topicId: event.currentTarget.dataset.topicId, cardId: event.currentTarget.dataset.cardId, reactionId: event.currentTarget.dataset.reactionId, turnId: event.currentTarget.dataset.turnId, pendingTurnId: event.currentTarget.dataset.pendingTurnId });
+      await handleAction(event.currentTarget.dataset.action, { marketId: event.currentTarget.dataset.marketId, topicId: event.currentTarget.dataset.topicId, cardId: event.currentTarget.dataset.cardId, reactionGroup: event.currentTarget.dataset.reactionGroup, reactionId: event.currentTarget.dataset.reactionId, turnId: event.currentTarget.dataset.turnId, pendingTurnId: event.currentTarget.dataset.pendingTurnId });
     });
   }
   for (const select of document.querySelectorAll('[data-role="debater-slot"]')) {
@@ -1742,6 +1824,12 @@ function bindChat() {
   const textarea = document.getElementById('chatText');
   if (!form || !textarea) return;
   autoGrowChatInput(textarea);
+  for (const button of form.querySelectorAll('[data-chat-format]')) {
+    button.addEventListener('click', () => applyChatFormat(textarea, button.dataset.chatFormat));
+  }
+  for (const button of form.querySelectorAll('[data-chat-emoji]')) {
+    button.addEventListener('click', () => insertChatText(textarea, button.dataset.chatEmoji || ''));
+  }
   textarea.addEventListener('input', () => {
     state.ui.chatDraft = textarea.value;
     autoGrowChatInput(textarea);
@@ -1756,6 +1844,68 @@ function bindChat() {
     event.preventDefault();
     await handleAction('sendChatMessage');
   });
+}
+
+function bindResultSpotlight() {
+  for (const el of document.querySelectorAll('[data-result-spotlight]')) {
+    el.addEventListener('click', () => dismissResultSpotlight(el.dataset.resultSpotlight === 'view'));
+  }
+  if (state.ui.resultSpotlightEscBound) return;
+  state.ui.resultSpotlightEscBound = true;
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const key = resultSpotlightKey(state.room);
+    if (!key || state.ui.dismissedResultSpotlightKey === key) return;
+    dismissResultSpotlight(false);
+  });
+}
+
+function dismissResultSpotlight(openDetails) {
+  const key = resultSpotlightKey(state.room);
+  if (!key) return;
+  state.ui.dismissedResultSpotlightKey = key;
+  if (openDetails) state.ui.resultReviewOpenKey = key;
+  render();
+  requestAnimationFrame(() => document.getElementById('round-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+
+function applyChatFormat(textarea, format) {
+  const markers = {
+    bold: ['**', '**'],
+    italic: ['_', '_'],
+    underline: ['__', '__'],
+  }[format];
+  if (!markers) return;
+  const [open, close] = markers;
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? start;
+  const selected = textarea.value.slice(start, end);
+  const replacement = `${open}${selected}${close}`;
+  textarea.value = `${textarea.value.slice(0, start)}${replacement}${textarea.value.slice(end)}`;
+  const cursorStart = start + open.length;
+  const cursorEnd = cursorStart + selected.length;
+  textarea.focus();
+  textarea.setSelectionRange(cursorStart, cursorEnd);
+  syncChatDraftFromInput(textarea);
+}
+
+function insertChatText(textarea, value) {
+  if (!value) return;
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? start;
+  const prefix = start > 0 && !/\s$/.test(textarea.value.slice(0, start)) ? ' ' : '';
+  const suffix = end < textarea.value.length && !/^\s/.test(textarea.value.slice(end)) ? ' ' : '';
+  const insertion = `${prefix}${value}${suffix}`;
+  textarea.value = `${textarea.value.slice(0, start)}${insertion}${textarea.value.slice(end)}`;
+  const cursor = start + insertion.length;
+  textarea.focus();
+  textarea.setSelectionRange(cursor, cursor);
+  syncChatDraftFromInput(textarea);
+}
+
+function syncChatDraftFromInput(textarea) {
+  state.ui.chatDraft = textarea.value;
+  autoGrowChatInput(textarea);
 }
 
 function autoGrowChatInput(textarea) {
@@ -1899,7 +2049,7 @@ async function handleAction(action, payload = {}) {
         state.ui.chatStickToBottom = true;
         state.message = 'Room chat cleared.';
         break;
-      case 'submitJuryReaction': data = await api(`${roomPath}/jury`, { method: 'POST', body: { playerId: state.session.playerId, turnId: payload.turnId, reactionId: payload.reactionId } }); state.message = 'Jury reaction recorded.'; break;
+      case 'submitJuryReaction': data = await api(`${roomPath}/jury`, { method: 'POST', body: { playerId: state.session.playerId, turnId: payload.turnId, group: payload.reactionGroup, reactionId: payload.reactionId } }); state.message = data.reaction?.removed ? 'Jury reaction cleared.' : 'Jury reaction recorded.'; break;
       default: return;
     }
     if (data?.room) state.room = data.room;
