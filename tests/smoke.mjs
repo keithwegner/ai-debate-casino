@@ -32,6 +32,57 @@ async function expectApiError(path, options, status) {
   return data;
 }
 
+async function openRoomEventStream(roomId) {
+  const headers = cookieHeader ? { Cookie: cookieHeader } : {};
+  const response = await fetch(`${base}/api/rooms/${roomId}/events`, { headers });
+  if (!response.ok || !response.body) throw new Error(`Failed to open room event stream: ${response.status}`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let closed = false;
+
+  function parseBlock(block) {
+    let event = 'message';
+    const data = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+    }
+    if (!data.length) return null;
+    return { event, data: data.join('\n') };
+  }
+
+  async function nextRoom(predicate, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      while (buffer.includes('\n\n')) {
+        const index = buffer.indexOf('\n\n');
+        const block = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        const parsed = parseBlock(block);
+        if (!parsed || parsed.event !== 'room') continue;
+        const room = JSON.parse(parsed.data);
+        if (predicate(room)) return room;
+      }
+      const remaining = deadline - Date.now();
+      const timeout = new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), Math.min(remaining, 250)));
+      const result = await Promise.race([reader.read(), timeout]);
+      if (result?.timeout) continue;
+      if (result.done) break;
+      buffer += decoder.decode(result.value, { stream: true });
+    }
+    throw new Error(`Timed out waiting for room SSE event for ${roomId}.`);
+  }
+
+  async function close() {
+    if (closed) return;
+    closed = true;
+    try { await reader.cancel(); } catch { /* ignore */ }
+  }
+
+  return { nextRoom, close };
+}
+
 async function assertRedisRoomSnapshot(roomId, namespace, options = {}) {
   if (!process.env.REDIS_URL) throw new Error('Health reported Redis persistence but REDIS_URL is not available to the smoke test.');
   const client = createClient({ url: process.env.REDIS_URL });
@@ -159,7 +210,7 @@ async function configureRound(roomId, hostToken, personaAId = 'formal_logician',
 
 function eligibleBettorsFromRoom(room) {
   const humanDebaterIds = new Set((room.debaters || []).filter((debater) => debater.kind === 'human').map((debater) => debater.playerId));
-  return (room.players || []).filter((player) => !player.isHost && !player.isBot && !humanDebaterIds.has(player.id) && Number(player.bankroll || 0) >= 10);
+  return (room.players || []).filter((player) => !player.isHost && !player.isBot && !player.leftAt && !humanDebaterIds.has(player.id) && Number(player.bankroll || 0) >= 10);
 }
 
 async function joinAudience(roomId) {
@@ -278,11 +329,15 @@ const created = await api('/api/rooms', { method: 'POST', body: { displayName: '
 const roomId = created.room.id;
 const hostToken = created.hostToken;
 if (!Array.isArray(created.room.chatMessages) || created.room.chatMessages.length) throw new Error('New room did not expose empty chatMessages.');
+if (!created.room.activity?.some((entry) => entry.type === 'room_created')) throw new Error('New room did not expose room-created activity.');
 if (!created.room.topicVote?.open || created.room.topicVote.totalVotes !== 0) throw new Error('New room did not expose open empty topicVote state.');
 if (health.persistence?.mode === 'redis') await assertRedisRoomSnapshot(roomId, health.persistence.namespace || 'ai-debate-casino');
 console.log(`Created room ${roomId}`);
 
 const chatJoin = await api(`/api/rooms/${roomId}/join`, { method: 'POST', body: { displayName: 'Chat Friend' } });
+if (!chatJoin.room.activity?.some((entry) => entry.type === 'join' && entry.playerId === chatJoin.playerId && entry.message.includes('Chat Friend'))) {
+  throw new Error('Join activity was not recorded for a new player.');
+}
 const chatPost = await api(`/api/rooms/${roomId}/chat`, {
   method: 'POST',
   body: { playerId: chatJoin.playerId, text: 'Hello from the chat rail.' },
@@ -335,6 +390,14 @@ if (closedVote.room.debaters.length) throw new Error('Closing topic vote should 
 await expectApiError(`/api/rooms/${roomId}/topics/vote`, { method: 'POST', body: { playerId: created.playerId, topicId: submittedTopic.topic.id } }, 409);
 const resetVoteRoom = await api(`/api/rooms/${roomId}/reset`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { keepBankroll: true } });
 if (resetVoteRoom.room.topic || resetVoteRoom.room.topics.length || resetVoteRoom.room.topicVote.votes.length || resetVoteRoom.room.topicVote.submissions.length) throw new Error('Room reset did not clear topic voting state.');
+const leaveRoom = await api(`/api/rooms/${roomId}/leave`, { method: 'POST', body: { playerId: chatJoin.playerId } });
+const inactiveChatFriend = leaveRoom.room.players.find((player) => player.id === chatJoin.playerId);
+if (!inactiveChatFriend?.leftAt) throw new Error('Leave did not mark the player inactive.');
+if (!leaveRoom.room.players.some((player) => player.id === chatJoin.playerId)) throw new Error('Leave removed the player record instead of preserving history.');
+if (!leaveRoom.room.activity?.some((entry) => entry.type === 'leave' && entry.playerId === chatJoin.playerId && entry.message.includes('Chat Friend'))) {
+  throw new Error('Leave activity was not recorded.');
+}
+await expectApiError(`/api/rooms/${roomId}/chat`, { method: 'POST', body: { playerId: chatJoin.playerId, text: 'I should be inactive.' } }, 400);
 
 const overrideRoom = await api('/api/rooms', { method: 'POST', body: { displayName: 'Override Host' } });
 const overrideGuest = await api(`/api/rooms/${overrideRoom.room.id}/join`, { method: 'POST', body: { displayName: 'Override Voter' } });
@@ -425,9 +488,11 @@ const humanAssigned = await api(`/api/rooms/${humanRoom.roomId}/debaters`, {
 if (humanAssigned.room.debaters[0]?.kind !== 'human') throw new Error('Debater A was not assigned as a human.');
 if (humanAssigned.room.debaters[0]?.playerId !== humanRoom.humanPlayerId) throw new Error('Human debater did not preserve player id.');
 if (humanAssigned.room.debaters[1]?.kind !== 'ai') throw new Error('Debater B was not assigned as AI.');
-await api(`/api/rooms/${humanRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': humanRoom.hostToken }, body: {} });
-await expectApiError(`/api/rooms/${humanRoom.roomId}/bets`, { method: 'POST', body: { playerId: humanRoom.humanPlayerId, marketId: 'winner_a', amount: 50 } }, 400);
-await api(`/api/rooms/${humanRoom.roomId}/bets`, { method: 'POST', body: { playerId: humanRoom.bettorPlayerId, marketId: 'winner_a', amount: 50 } });
+const humanOdds = await api(`/api/rooms/${humanRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': humanRoom.hostToken }, body: {} });
+const humanMarketId = humanOdds.room.markets[0]?.id;
+if (!humanMarketId) throw new Error('Human debate room did not expose a betting market.');
+await expectApiError(`/api/rooms/${humanRoom.roomId}/bets`, { method: 'POST', body: { playerId: humanRoom.humanPlayerId, marketId: humanMarketId, amount: 50 } }, 400);
+await api(`/api/rooms/${humanRoom.roomId}/bets`, { method: 'POST', body: { playerId: humanRoom.bettorPlayerId, marketId: humanMarketId, amount: 50 } });
 await api(`/api/rooms/${humanRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': humanRoom.hostToken }, body: {} });
 const submittedHuman = await submitHumanTurnsUntilResults(humanRoom.roomId, humanRoom.humanPlayerId);
 if (!submittedHuman.submitted.length) throw new Error('No human turns were submitted.');
@@ -442,8 +507,10 @@ await api(`/api/rooms/${weakRoom.roomId}/debaters`, {
   headers: { 'X-Host-Token': weakRoom.hostToken },
   body: { debaterA: { kind: 'human', playerId: weakRoom.humanPlayerId }, debaterB: { kind: 'ai', personaId: 'corporate_lawyer' } },
 });
-await api(`/api/rooms/${weakRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': weakRoom.hostToken }, body: {} });
-await api(`/api/rooms/${weakRoom.roomId}/bets`, { method: 'POST', body: { playerId: weakRoom.bettorPlayerId, marketId: 'winner_b', amount: 50 } });
+const weakOdds = await api(`/api/rooms/${weakRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': weakRoom.hostToken }, body: {} });
+const weakMarketId = weakOdds.room.markets[0]?.id;
+if (!weakMarketId) throw new Error('Weak human debate room did not expose a betting market.');
+await api(`/api/rooms/${weakRoom.roomId}/bets`, { method: 'POST', body: { playerId: weakRoom.bettorPlayerId, marketId: weakMarketId, amount: 50 } });
 await api(`/api/rooms/${weakRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': weakRoom.hostToken }, body: {} });
 const weakFinal = await submitHumanTurnsUntilResults(weakRoom.roomId, weakRoom.humanPlayerId, () => 'what');
 if (weakFinal.room.verdict?.winnerDebaterId === 'debater_a') throw new Error('Weak human arguments incorrectly beat the AI debater.');
@@ -457,8 +524,10 @@ if (Number(health.humanTurnTimeoutMs || 90000) <= 1000) {
     headers: { 'X-Host-Token': timeoutRoom.hostToken },
     body: { debaterA: { kind: 'human', playerId: timeoutRoom.humanPlayerId }, debaterB: { kind: 'ai', personaId: 'product_manager' } },
   });
-  await api(`/api/rooms/${timeoutRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': timeoutRoom.hostToken }, body: {} });
-  await api(`/api/rooms/${timeoutRoom.roomId}/bets`, { method: 'POST', body: { playerId: timeoutRoom.bettorPlayerId, marketId: 'winner_b', amount: 50 } });
+  const timeoutOdds = await api(`/api/rooms/${timeoutRoom.roomId}/odds`, { method: 'POST', headers: { 'X-Host-Token': timeoutRoom.hostToken }, body: {} });
+  const timeoutMarketId = timeoutOdds.room.markets[0]?.id;
+  if (!timeoutMarketId) throw new Error('Timeout human debate room did not expose a betting market.');
+  await api(`/api/rooms/${timeoutRoom.roomId}/bets`, { method: 'POST', body: { playerId: timeoutRoom.bettorPlayerId, marketId: timeoutMarketId, amount: 50 } });
   await api(`/api/rooms/${timeoutRoom.roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': timeoutRoom.hostToken }, body: {} });
   const timeoutFinal = await waitForResults(timeoutRoom.roomId);
   if (!timeoutFinal.turns.some((turn) => turn.timeoutFilled && turn.source === 'ai_timeout')) throw new Error('Human turn timeout did not produce an AI fill-in transcript entry.');
@@ -487,7 +556,13 @@ const juryThumbOff = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', bo
 updatedReactions = juryThumbOff.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'thumb');
 if (updatedReactions.length !== 0) throw new Error('Selecting the same thumb reaction did not remove it.');
 await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'thumb', reactionId: 'thumb_down' } });
+const reactionStream = await openRoomEventStream(roomId);
 const juryLaugh = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'emoji', reactionId: 'laugh' } });
+try {
+  await reactionStream.nextRoom((room) => room.jury?.turns?.some((turn) => turn.turnId === juryTarget.target.id && turn.groups?.emoji?.laugh === 1), 6000);
+} finally {
+  await reactionStream.close();
+}
 const juryFire = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'emoji', reactionId: 'fire' } });
 if (juryFire.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'emoji').length !== 2) throw new Error('Independent emoji reactions were not both recorded.');
 const juryLaughOff = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'emoji', reactionId: 'laugh' } });

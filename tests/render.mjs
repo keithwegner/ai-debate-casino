@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const appSource = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
   .replace('initAmbientMotion();\ninit();', '')
-  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey, syncActiveSectionFromViewport, bindResultReview };');
+  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey, syncActiveSectionFromViewport, bindResultReview, bindEmojiMenus, setRoom };');
 
 const root = { innerHTML: '' };
 const context = {
@@ -44,7 +44,7 @@ context.globalThis = context;
 vm.createContext(context);
 vm.runInContext(appSource, context, { filename: 'public/app.js' });
 
-const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey, syncActiveSectionFromViewport, bindResultReview } = context.__app;
+const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey, syncActiveSectionFromViewport, bindResultReview, bindEmojiMenus, setRoom } = context.__app;
 
 function makeRoom(overrides = {}) {
   const openedAt = Date.now() - 10_000;
@@ -81,6 +81,7 @@ function makeRoom(overrides = {}) {
     heckles: [],
     heckleCards: [{ id: 'pirate_analogy', label: 'Pirate Analogy', cost: 25, instruction: 'Use a pirate analogy.' }],
     chatMessages: [],
+    activity: [],
     juryReactions: [],
     jury: { options: [], reactionsTotal: 0, totals: {} },
     turns: [],
@@ -135,6 +136,24 @@ assert.match(hostActiveHtml, /Hosts guide the round/);
 assert.doesNotMatch(hostActiveHtml, /Bet amount/);
 assert.doesNotMatch(hostActiveHtml, /data-action="placeBet"/);
 assert.match(hostActiveHtml, /class="mobile-exit" data-action="leaveRoom" aria-label="Leave room"><span>Exit<\/span>/);
+
+const inactiveRoom = makeRoom({
+  players: [
+    { id: 'host', displayName: 'Host', bankroll: 1000, isHost: true, isBot: false },
+    { id: 'bettor', displayName: 'Bettor', bankroll: 1000, isHost: false, isBot: false },
+    { id: 'bettor2', displayName: 'Bettor Two', bankroll: 1000, isHost: false, isBot: false, leftAt: '2026-05-14T12:00:00.000Z' },
+  ],
+  activity: [
+    { id: 'activity_created', type: 'room_created', message: 'Room created. The table is open.', createdAt: '2026-05-14T11:58:00.000Z' },
+    { id: 'activity_join', type: 'join', message: 'Bettor joined the room.', playerId: 'bettor', displayName: 'Bettor', createdAt: '2026-05-14T11:59:00.000Z' },
+    { id: 'activity_leave', type: 'leave', message: 'Bettor Two left the room.', playerId: 'bettor2', displayName: 'Bettor Two', createdAt: '2026-05-14T12:00:00.000Z' },
+  ],
+});
+const inactiveHtml = renderAsHost(inactiveRoom);
+assert.match(inactiveHtml, /Room created\. The table is open\./);
+assert.match(inactiveHtml, /Bettor Two left the room\./);
+assert.doesNotMatch(inactiveHtml, /<span class="lobby-name">Bettor Two<\/span>/);
+assert.doesNotMatch(inactiveHtml, /value="human:bettor2"/);
 
 const doneRoom = makeRoom({
   bettingWindow: { ...activeRoom.bettingWindow, done: true, doneReason: 'all_bettors_ready', bettedCount: 2 },
@@ -260,6 +279,10 @@ assert.match(reactionHtml, /data-reaction-id="double_thumb"/);
 assert.match(reactionHtml, /data-reaction-group="emoji"/);
 assert.match(reactionHtml, /class="turn-reaction thumb active"/);
 assert.match(reactionHtml, /<summary><span>Emoji<\/span><b>2<\/b><\/summary>/);
+state.ui.emojiMenuOpenKeys = ['turn_react'];
+const openReactionHtml = renderAsPlayer(reactionRoom);
+assert.match(openReactionHtml, /<details class="turn-emoji-menu" data-emoji-menu-key="turn_react" open>/);
+state.ui.emojiMenuOpenKeys = [];
 
 state.ui.roomTab = 'chat';
 const formattedChatHtml = renderAsPlayer(makeRoom({
@@ -347,6 +370,7 @@ function makeNavItem(section) {
 
 const originalGetElementById = context.document.getElementById;
 const originalQuerySelectorAll = context.document.querySelectorAll;
+const originalQuerySelector = context.document.querySelector;
 try {
   const navItems = ['live', 'bets', 'room', 'chat', 'host'].map(makeNavItem);
   const sectionPositions = {
@@ -384,9 +408,73 @@ try {
   fakeDetails.open = false;
   resultToggleHandler();
   assert.equal(state.ui.resultReviewOpenKey, '');
+
+  const streamingTextClasses = new Set();
+  const fakeStreamingText = {
+    textContent: 'Original partial',
+    classList: {
+      toggle(name, on) {
+        if (on) streamingTextClasses.add(name);
+        else streamingTextClasses.delete(name);
+      },
+    },
+  };
+  const fakeTurnBody = {
+    querySelector(selector) {
+      return selector === '[data-streaming-text]' ? fakeStreamingText : null;
+    },
+  };
+  const previousStreamingRoom = makeRoom({
+    id: 'STREAM',
+    status: 'DEBATE',
+    currentPhase: 'Opening statement',
+    version: 10,
+    turns: [completedTurn],
+    streamingTurn: {
+      id: 'stream_1',
+      phase: 'Rebuttal',
+      speakerDebaterId: 'debater_b',
+      speakerName: 'Roadmap Rhonda',
+      persona: 'Product Manager',
+      sideLabel: 'Against',
+      text: 'Original partial',
+      streaming: true,
+    },
+  });
+  const nextStreamingRoom = {
+    ...previousStreamingRoom,
+    version: 11,
+    streamingTurn: { ...previousStreamingRoom.streamingTurn, text: 'Original partial plus more words' },
+  };
+  root.innerHTML = 'stable streaming html';
+  state.room = previousStreamingRoom;
+  context.document.querySelector = (selector) => selector === '[data-turn-body="stream_1"]' ? fakeTurnBody : null;
+  setRoom(nextStreamingRoom);
+  assert.equal(root.innerHTML, 'stable streaming html');
+  assert.equal(fakeStreamingText.textContent, 'Original partial plus more words');
+  assert.equal(streamingTextClasses.has('typing-placeholder'), false);
+
+  let emojiToggleHandler = null;
+  const fakeEmojiMenu = {
+    open: true,
+    dataset: { emojiMenuKey: 'turn_react' },
+    addEventListener(event, handler) {
+      if (event === 'toggle') emojiToggleHandler = handler;
+    },
+  };
+  context.document.querySelectorAll = (selector) => selector === '[data-emoji-menu-key]' ? [fakeEmojiMenu] : [];
+  state.ui.emojiMenuOpenKeys = [];
+  bindEmojiMenus();
+  assert.equal(typeof emojiToggleHandler, 'function');
+  emojiToggleHandler();
+  assert.deepEqual(Array.from(state.ui.emojiMenuOpenKeys), ['turn_react']);
+  fakeEmojiMenu.open = false;
+  emojiToggleHandler();
+  assert.deepEqual(Array.from(state.ui.emojiMenuOpenKeys), []);
 } finally {
   context.document.getElementById = originalGetElementById;
   context.document.querySelectorAll = originalQuerySelectorAll;
+  context.document.querySelector = originalQuerySelector;
 }
 
 console.log('Renderer checks passed.');

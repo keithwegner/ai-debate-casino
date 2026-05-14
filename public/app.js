@@ -12,6 +12,9 @@ let state = {
   pendingAction: '',
   pollTimer: null,
   eventSource: null,
+  liveStaleTimer: null,
+  lastLiveEventAt: 0,
+  renderFrame: 0,
   countdownTimer: null,
   ui: {
     hostConsoleOpen: false,
@@ -29,6 +32,7 @@ let state = {
     scrollToLiveAfterRender: false,
     dismissedResultSpotlightKey: '',
     resultReviewOpenKey: '',
+    emojiMenuOpenKeys: [],
     resultSpotlightEscBound: false,
   },
 };
@@ -174,10 +178,18 @@ function setRoom(room) {
       return;
     }
     state.room = room;
-    render();
+    scheduleRender();
   } else {
     state.room = room;
   }
+}
+
+function scheduleRender() {
+  if (state.renderFrame) return;
+  state.renderFrame = requestAnimationFrame(() => {
+    state.renderFrame = 0;
+    render();
+  });
 }
 
 function canPatchStreamingTurn(previous, next) {
@@ -208,28 +220,55 @@ function patchStreamingTurn(turn) {
 function startLiveUpdates() {
   if (!state.session?.roomId) return;
   if (state.eventSource) state.eventSource.close();
+  if (state.liveStaleTimer) clearInterval(state.liveStaleTimer);
+  state.lastLiveEventAt = Date.now();
   state.eventSource = new EventSource(`/api/rooms/${state.session.roomId}/events`);
+  state.eventSource.addEventListener('open', () => {
+    state.lastLiveEventAt = Date.now();
+  });
+  state.eventSource.addEventListener('ping', () => {
+    state.lastLiveEventAt = Date.now();
+    stopPolling();
+  });
   state.eventSource.addEventListener('room', (event) => {
+    state.lastLiveEventAt = Date.now();
+    stopPolling();
     try { setRoom(JSON.parse(event.data)); } catch { /* ignore */ }
   });
   state.eventSource.onerror = () => {
-    if (!state.pollTimer) state.pollTimer = setInterval(loadRoom, 1600);
+    startPolling();
   };
+  state.liveStaleTimer = setInterval(() => {
+    if (Date.now() - state.lastLiveEventAt > 20000) startPolling();
+  }, 5000);
 }
 
 function stopLiveUpdates() {
   if (state.eventSource) state.eventSource.close();
   state.eventSource = null;
-  if (state.pollTimer) clearInterval(state.pollTimer);
-  state.pollTimer = null;
+  stopPolling();
+  if (state.liveStaleTimer) clearInterval(state.liveStaleTimer);
+  state.liveStaleTimer = null;
   if (state.countdownTimer) clearInterval(state.countdownTimer);
   state.countdownTimer = null;
+  if (state.renderFrame) cancelAnimationFrame(state.renderFrame);
+  state.renderFrame = 0;
+}
+
+function startPolling() {
+  if (!state.pollTimer) state.pollTimer = setInterval(loadRoom, 1600);
+}
+
+function stopPolling() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
 }
 
 function render() {
   captureHostConsoleState();
   captureTopicVoteState();
   captureChatState();
+  captureEmojiMenuState();
   if (needsAccess()) {
     root.innerHTML = accessHtml();
     bindAccess();
@@ -869,7 +908,7 @@ function debatersContentHtml(room) {
   const seats = room.debaters?.length
     ? room.debaters.map((d) => `<article class="debater ${d.id} ${d.kind === 'human' ? 'human-debater' : ''}"><div class="side-label">${h(d.sideLabel)}</div><h4>${h(d.displayName)}</h4><div class="muted">${h(d.archetype)}${d.kind === 'human' ? ' · Lobby player' : ''}</div><p>${h(d.tagline)}</p><div class="stance">${h(d.stance)}</div></article>`).join('')
     : '<p class="muted">Personas appear after topic selection.</p>';
-  return `${seats}${lobbyHtml(room)}`;
+  return `${seats}${lobbyHtml(room)}${roomActivityHtml(room)}`;
 }
 
 function lobbyHtml(room) {
@@ -887,7 +926,18 @@ function lobbyHtml(room) {
 }
 
 function lobbyPlayers(room) {
-  return (room.players || []).filter((p) => !p.isBot);
+  return (room.players || []).filter((p) => !p.isBot && !p.leftAt);
+}
+
+function roomActivityHtml(room) {
+  const entries = (room.activity || []).slice(-8).reverse();
+  return `
+    <div class="room-activity" aria-live="polite">
+      <div class="kicker">Activity</div>
+      ${entries.length
+        ? `<ul>${entries.map((entry) => `<li><span>${h(entry.message)}</span><time datetime="${h(entry.createdAt || '')}">${h(formatChatTime(entry.createdAt))}</time></li>`).join('')}</ul>`
+        : '<p class="muted small">No room activity yet.</p>'}
+    </div>`;
 }
 
 function assignedDebaterSlotForPlayer(room, playerId) {
@@ -936,14 +986,20 @@ function turnReactionControlsHtml(turn, room) {
   const emojiButtons = groups.emoji.map((reaction) => reactionButtonHtml(turn, room, reaction, myReactions, canReact)).join('');
   const totalEmojiCount = groups.emoji.reduce((sum, reaction) => sum + turnReactionCount(turn, room, reaction), 0);
   const disabled = canReact ? '' : ' aria-disabled="true"';
+  const menuKey = emojiMenuKey(turn);
+  const open = state.ui.emojiMenuOpenKeys.includes(menuKey) ? ' open' : '';
   return `
     <div class="turn-reactions" aria-label="Statement reactions">
       <div class="turn-thumbs" aria-label="Thumb reactions">${thumbButtons}</div>
-      <details class="turn-emoji-menu"${disabled}>
+      <details class="turn-emoji-menu" data-emoji-menu-key="${h(menuKey)}"${disabled}${open}>
         <summary><span>Emoji</span><b>${h(totalEmojiCount)}</b></summary>
         <div class="turn-emoji-options" aria-label="Emoji reactions">${emojiButtons}</div>
       </details>
     </div>`;
+}
+
+function emojiMenuKey(turn) {
+  return turn?.id ? String(turn.id) : '';
 }
 
 function reactionButtonHtml(turn, room, reaction, myReactions, canReact) {
@@ -1676,6 +1732,7 @@ function bindRoom() {
   bindChat();
   bindResultSpotlight();
   bindResultReview();
+  bindEmojiMenus();
   bindSectionNav();
   for (const el of document.querySelectorAll('[data-room-tab]')) {
     el.addEventListener('click', () => {
@@ -1900,6 +1957,27 @@ function bindResultReview() {
   });
 }
 
+function bindEmojiMenus() {
+  for (const details of document.querySelectorAll('[data-emoji-menu-key]')) {
+    details.addEventListener('toggle', () => {
+      const key = details.dataset.emojiMenuKey || '';
+      if (!key) return;
+      const openKeys = new Set(state.ui.emojiMenuOpenKeys || []);
+      if (details.open) openKeys.add(key);
+      else openKeys.delete(key);
+      state.ui.emojiMenuOpenKeys = [...openKeys];
+    });
+  }
+}
+
+function captureEmojiMenuState() {
+  const openKeys = [];
+  for (const details of document.querySelectorAll('[data-emoji-menu-key]')) {
+    if (details.open && details.dataset.emojiMenuKey) openKeys.push(details.dataset.emojiMenuKey);
+  }
+  if (openKeys.length || (state.ui.emojiMenuOpenKeys || []).length) state.ui.emojiMenuOpenKeys = openKeys;
+}
+
 function dismissResultSpotlight(openDetails) {
   const key = resultSpotlightKey(state.room);
   if (!key) return;
@@ -1990,6 +2068,14 @@ async function handleAction(action, payload = {}) {
   if (!roomId) return;
   const roomPath = `/api/rooms/${roomId}`;
   if (action === 'leaveRoom') {
+    const playerId = state.session?.playerId;
+    if (playerId) {
+      try {
+        await api(`${roomPath}/leave`, { method: 'POST', body: { playerId } });
+      } catch {
+        /* Leave is best-effort so local exit still works if the network drops. */
+      }
+    }
     stopLiveUpdates();
     writeSession(null);
     state.room = null;

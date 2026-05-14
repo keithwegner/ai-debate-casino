@@ -226,6 +226,7 @@ function createRoom(hostName) {
     heckles: [],
     bettingWindow: null,
     chatMessages: [],
+    activity: [],
     juryReactions: [],
     turns: [],
     streamingTurn: null,
@@ -236,7 +237,10 @@ function createRoom(hostName) {
     error: null,
   };
   rooms.set(room.id, room);
-  pushComment(room, 'Room created. The table is open.');
+  recordActivity(room, 'room_created', 'Room created. The table is open.', {
+    playerId: room.players[0].id,
+    displayName: room.players[0].displayName,
+  });
   return { room, host: room.players[0], hostToken: room.hostToken };
 }
 
@@ -249,6 +253,24 @@ function touch(room) {
 
 function pushComment(room) {
   touch(room);
+}
+
+function recordActivity(room, type, message, metadata = {}) {
+  const entry = {
+    id: id('activity_'),
+    type: cleanText(type, 40) || 'room',
+    message: cleanText(message, 240) || 'Room updated.',
+    playerId: cleanText(metadata.playerId, 100),
+    displayName: cleanText(metadata.displayName, 80),
+    createdAt: now(),
+  };
+  room.activity = [...(room.activity || []), entry].slice(-80);
+  touch(room);
+  return entry;
+}
+
+function activeRoomPlayers(room) {
+  return (room.players || []).filter((player) => !player.leftAt);
 }
 
 function setPhase(room, status, phase) {
@@ -293,6 +315,7 @@ function reviveRoom(rawRoom) {
     heckles: Array.isArray(rawRoom?.heckles) ? rawRoom.heckles : [],
     bettingWindow: rawRoom?.bettingWindow || null,
     chatMessages: Array.isArray(rawRoom?.chatMessages) ? rawRoom.chatMessages : [],
+    activity: Array.isArray(rawRoom?.activity) ? rawRoom.activity : [],
     juryReactions: Array.isArray(rawRoom?.juryReactions) ? rawRoom.juryReactions : [],
     turns: Array.isArray(rawRoom?.turns) ? rawRoom.turns : [],
     streamingTurn: null,
@@ -377,6 +400,7 @@ function publicRoom(room) {
     heckles: room.heckles,
     bettingWindow: publicBettingWindow(room),
     chatMessages: room.chatMessages || [],
+    activity: room.activity || [],
     juryReactions: room.juryReactions || [],
     jury: jurySummary(room),
     turns: room.turns,
@@ -498,13 +522,20 @@ async function readJson(req) {
 function subscribe(room, req, res) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-store',
+    'Cache-Control': 'no-store, no-transform',
     Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
   });
   if (!subscribers.has(room.id)) subscribers.set(room.id, new Set());
   subscribers.get(room.id).add(res);
   res.write(`event: room\ndata: ${JSON.stringify(publicRoom(room))}\n\n`);
-  req.on('close', () => subscribers.get(room.id)?.delete(res));
+  const heartbeat = setInterval(() => {
+    try { res.write(`event: ping\ndata: ${JSON.stringify({ at: now(), version: room.version })}\n\n`); } catch { subscribers.get(room.id)?.delete(res); }
+  }, 15000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    subscribers.get(room.id)?.delete(res);
+  });
 }
 
 function broadcast(room) {
@@ -551,8 +582,26 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const player = createPlayer(body.displayName, false, false);
       room.players.push(player);
-      pushComment(room, `${player.displayName} took a seat.`);
+      recordActivity(room, 'join', `${player.displayName} joined the room.`, {
+        playerId: player.id,
+        displayName: player.displayName,
+      });
       return sendJson(res, 201, { room: publicRoom(room), playerId: player.id });
+    }
+
+    if (method === 'POST' && action === 'leave') {
+      const body = await readJson(req);
+      const playerId = cleanText(body.playerId, 100);
+      const player = room.players.find((p) => p.id === playerId && !p.isBot);
+      if (!player) throw apiError(404, 'Player not found.');
+      if (!player.leftAt) {
+        player.leftAt = now();
+        recordActivity(room, 'leave', `${player.displayName} left the room.`, {
+          playerId: player.id,
+          displayName: player.displayName,
+        });
+      }
+      return sendJson(res, 200, { room: publicRoom(room) });
     }
 
     if (method === 'POST' && action === 'topics/generate') {
@@ -845,6 +894,7 @@ async function submitTopicCandidate(room, playerId, rawText) {
   assertTopicVoteOpen(room);
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(400, 'Player not found.');
+  if (player.leftAt) throw apiError(400, 'This player has left the room.');
   if (player.isBot) throw apiError(400, 'Automated players cannot suggest topics.');
   if ((room.topicSubmissions || []).some((submission) => submission.playerId === player.id)) throw apiError(400, 'You already suggested a topic this round.');
   const moderation = await safeNormalizeCustomTopic(rawText);
@@ -879,6 +929,7 @@ function voteForTopic(room, playerId, topicId) {
   assertTopicVoteOpen(room);
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(400, 'Player not found.');
+  if (player.leftAt) throw apiError(400, 'This player has left the room.');
   if (player.isBot) throw apiError(400, 'Automated players cannot vote on topics.');
   const topic = (room.topics || []).find((candidate) => candidate.id === topicId);
   if (!topic) throw apiError(400, 'Topic candidate not found.');
@@ -975,7 +1026,7 @@ function makeDebaterFromSlot(room, id, slot, sideLabel, stance) {
     if (!persona) throw apiError(400, 'AI debater persona was not found.');
     return makeDebater(id, persona, sideLabel, stance);
   }
-  const player = room.players.find((p) => p.id === slot.playerId && !p.isBot);
+  const player = room.players.find((p) => p.id === slot.playerId && !p.isBot && !p.leftAt);
   if (!player) throw apiError(400, 'Human debater must be a lobby player.');
   return makeHumanDebater(id, player, sideLabel, stance);
 }
@@ -1006,7 +1057,7 @@ function humanDebaterForPlayer(room, playerId) {
 }
 
 function eligibleBettorIds(room) {
-  return (room.players || [])
+  return activeRoomPlayers(room)
     .filter((player) => !player.isHost && !player.isBot)
     .filter((player) => !humanDebaterForPlayer(room, player.id))
     .filter((player) => Number(player.bankroll || 0) >= MIN_BET_AMOUNT)
@@ -1037,7 +1088,9 @@ function publicBettingWindow(room) {
   const parsedClosesAtMs = Date.parse(window.closesAt || '');
   const closesAtMs = Number.isFinite(parsedClosesAtMs) ? parsedClosesAtMs : openedAtMs + durationMs;
   const remainingMs = Math.max(0, closesAtMs - Date.now());
-  const eligibleIds = Array.isArray(window.eligibleBettorIds) ? window.eligibleBettorIds : eligibleBettorIds(room);
+  const activePlayerIds = new Set(activeRoomPlayers(room).map((player) => player.id));
+  const eligibleIds = (Array.isArray(window.eligibleBettorIds) ? window.eligibleBettorIds : eligibleBettorIds(room))
+    .filter((playerId) => activePlayerIds.has(playerId));
   const eligibleSet = new Set(eligibleIds);
   const bettedIds = new Set((room.bets || []).map((bet) => bet.userId).filter((userId) => eligibleSet.has(userId)));
   const eligibleCount = eligibleSet.size;
@@ -1093,6 +1146,7 @@ function placeBet(room, playerId, marketId, amountRaw) {
   if (!bettingWindow || bettingWindow.done) throw apiError(400, 'Betting window is closed.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
+  if (player.leftAt) throw apiError(400, 'This player has left the room.');
   if (player.isHost) throw apiError(400, 'Hosts guide the round. Betting is for non-host audience players.');
   if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot place bets in their own round.');
   const market = room.markets.find((m) => m.id === marketId);
@@ -1113,6 +1167,7 @@ function submitHeckle(room, playerId, cardId) {
   if (room.status === 'BETTING_OPEN' && !publicBettingWindow(room)?.done) throw apiError(400, 'Heckle Codes unlock after betting closes.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
+  if (player.leftAt) throw apiError(400, 'This player has left the room.');
   const card = HECKLE_CARDS.find((c) => c.id === cardId);
   if (!card) throw apiError(404, 'Heckle card not found.');
   if (player.bankroll < card.cost) throw apiError(400, 'Insufficient fake chips for heckle card.');
@@ -1126,6 +1181,7 @@ function submitHeckle(room, playerId, cardId) {
 function addChatMessage(room, playerId, rawText) {
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(400, 'Player not found.');
+  if (player.leftAt) throw apiError(400, 'This player has left the room.');
   if (player.isBot) throw apiError(400, 'Automated players cannot send chat messages.');
   const text = validateChatText(rawText);
   const message = {
@@ -1165,6 +1221,7 @@ function submitJuryReaction(room, playerId, turnId, group, reactionId) {
   if (room.status !== 'DEBATE') throw apiError(400, 'Jury reactions are open only during the live debate.');
   const player = room.players.find((p) => p.id === playerId);
   if (!player) throw apiError(404, 'Player not found.');
+  if (player.leftAt) throw apiError(400, 'This player has left the room.');
   if (player.isBot) throw apiError(400, 'Automated players cannot sit on the jury.');
   if (humanDebaterForPlayer(room, player.id)) throw apiError(400, 'Human debaters cannot sit on the jury in their own round.');
   const turn = juryTurnById(room, turnId);
