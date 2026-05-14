@@ -87,8 +87,9 @@ async function waitForStreamingTurn(roomId) {
 async function waitForReactableTurn(roomId) {
   for (let i = 0; i < 160; i++) {
     const { room } = await api(`/api/rooms/${roomId}`);
-    const target = room.streamingTurn || room.turns?.at(-1);
-    if (target?.id && ['DEBATE', 'JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) return { room, target };
+    const target = room.turns?.at(-1);
+    if (target?.id && room.status === 'DEBATE') return { room, target };
+    if (['JUDGING', 'SETTLEMENT', 'RESULTS'].includes(room.status)) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Room ${roomId} did not expose a jury-reactable turn.`);
@@ -471,23 +472,36 @@ await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', body:
 await expectApiError(`/api/rooms/${roomId}/readability`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: { mode: 'kids' } }, 404);
 
 await configureRound(roomId, hostToken, customPersona.id, 'product_manager');
-await expectApiError(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: 'missing', reactionId: 'funny' } }, 400);
+await expectApiError(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: 'missing', group: 'emoji', reactionId: 'laugh' } }, 400);
 await api(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Host-Token': hostToken }, body: {} });
 const juryTarget = await waitForReactableTurn(roomId);
-const liveJuryReaction = juryTarget.room.status === 'DEBATE';
-const juryVote = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, reactionId: 'strong_logic' } });
-if (juryVote.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id).length !== 1) throw new Error('Jury reaction was not recorded.');
-if (!juryVote.room.jury?.turns?.some((turn) => turn.turnId === juryTarget.target.id && turn.counts.strong_logic === 1)) throw new Error('Jury summary did not count the reaction.');
-const juryUpdate = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, reactionId: 'funny' } });
-const updatedReactions = juryUpdate.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id);
-if (updatedReactions.length !== 1 || updatedReactions[0].reactionId !== 'funny') throw new Error('Jury reaction did not update in place.');
+const juryVote = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'thumb', reactionId: 'thumb_up' } });
+if (juryVote.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'thumb').length !== 1) throw new Error('Thumb reaction was not recorded.');
+if (!juryVote.room.jury?.turns?.some((turn) => turn.turnId === juryTarget.target.id && turn.counts.thumb_up === 1 && turn.groups.thumb.thumb_up === 1)) throw new Error('Jury summary did not count the thumb reaction.');
+const juryUpdate = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'thumb', reactionId: 'double_thumb' } });
+let updatedReactions = juryUpdate.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'thumb');
+if (updatedReactions.length !== 1 || updatedReactions[0].reactionId !== 'double_thumb') throw new Error('Thumb reaction did not update in place.');
+const doubleSummary = juryUpdate.room.jury?.turns?.find((turn) => turn.turnId === juryTarget.target.id);
+if (!doubleSummary || doubleSummary.counts.double_thumb !== 1 || doubleSummary.positive < 2) throw new Error('Double thumbs up did not count as a stronger positive read.');
+const juryThumbOff = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'thumb', reactionId: 'double_thumb' } });
+updatedReactions = juryThumbOff.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'thumb');
+if (updatedReactions.length !== 0) throw new Error('Selecting the same thumb reaction did not remove it.');
+await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'thumb', reactionId: 'thumb_down' } });
+const juryLaugh = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'emoji', reactionId: 'laugh' } });
+const juryFire = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'emoji', reactionId: 'fire' } });
+if (juryFire.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'emoji').length !== 2) throw new Error('Independent emoji reactions were not both recorded.');
+const juryLaughOff = await api(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: juryTarget.target.id, group: 'emoji', reactionId: 'laugh' } });
+const remainingEmoji = juryLaughOff.room.juryReactions.filter((r) => r.playerId === created.playerId && r.turnId === juryTarget.target.id && r.group === 'emoji');
+if (remainingEmoji.length !== 1 || remainingEmoji[0].reactionId !== 'fire') throw new Error('Emoji reaction did not toggle independently.');
+if (!juryLaugh.room.jury?.turns?.some((turn) => turn.turnId === juryTarget.target.id && turn.groups.emoji.laugh === 1)) throw new Error('Jury summary did not count emoji reactions.');
 console.log('Started adult roast round. Waiting for results...');
 
 const finalRoom = await waitForResults(roomId);
 if (!finalRoom.verdict?.winnerDebaterId) throw new Error('Missing verdict.');
 if (!finalRoom.settlements?.leaderboard?.length) throw new Error('Missing settlement leaderboard.');
 if (!finalRoom.jury?.reactionsTotal) throw new Error('Missing jury reaction total.');
-if (liveJuryReaction && !finalRoom.verdict?.audienceJury?.reactionCount) throw new Error('Judge verdict did not include audience jury context.');
+if (!finalRoom.verdict?.audienceJury?.reactionCount) throw new Error('Judge verdict did not include audience jury context.');
+await expectApiError(`/api/rooms/${roomId}/jury`, { method: 'POST', body: { playerId: created.playerId, turnId: finalRoom.turns.at(-1)?.id, group: 'emoji', reactionId: 'clap' } }, 400);
 
 if (health.mode === 'mock') {
   if (finalRoom.turns[0]?.text.includes('I will keep this clear')) throw new Error('Mock debate unexpectedly used removed simplified-audience text.');

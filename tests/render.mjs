@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const appSource = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
   .replace('initAmbientMotion();\ninit();', '')
-  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi };');
+  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey };');
 
 const root = { innerHTML: '' };
 const context = {
@@ -44,7 +44,7 @@ context.globalThis = context;
 vm.createContext(context);
 vm.runInContext(appSource, context, { filename: 'public/app.js' });
 
-const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi } = context.__app;
+const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey } = context.__app;
 
 function makeRoom(overrides = {}) {
   const openedAt = Date.now() - 10_000;
@@ -203,5 +203,113 @@ assert.doesNotMatch(judgingHtml, /Bet amount/);
 assert.doesNotMatch(judgingHtml, /Place bet/);
 assert.doesNotMatch(judgingHtml, /Heckle Cards/);
 assert.match(judgingHtml, /Closed for judging/);
+
+const completedTurn = {
+  id: 'turn_react',
+  phase: 'Opening statement',
+  speakerDebaterId: 'debater_a',
+  speakerName: 'Professor Steelman',
+  persona: 'Formal Logician',
+  sideLabel: 'For',
+  text: 'This opening statement gives the audience a clear claim, a useful warrant, and a concrete example so the pinned reactions have a completed statement to target.',
+};
+const reactionRoom = makeRoom({
+  status: 'DEBATE',
+  currentPhase: 'Opening statement',
+  turns: [completedTurn],
+  juryReactions: [
+    { playerId: 'bettor', turnId: 'turn_react', group: 'thumb', reactionId: 'thumb_up' },
+    { playerId: 'bettor', turnId: 'turn_react', group: 'emoji', reactionId: 'laugh' },
+    { playerId: 'bettor2', turnId: 'turn_react', group: 'emoji', reactionId: 'fire' },
+  ],
+  jury: {
+    reactionsTotal: 3,
+    groups: {
+      thumb: [
+        { id: 'thumb_down', group: 'thumb', emoji: '👎', label: 'Thumbs down', sentiment: 'negative', score: -1 },
+        { id: 'thumb_up', group: 'thumb', emoji: '👍', label: 'Thumbs up', sentiment: 'positive', score: 1 },
+        { id: 'double_thumb', group: 'thumb', emoji: '👍👍', label: 'Double thumbs up', sentiment: 'positive', score: 2 },
+      ],
+      emoji: [
+        { id: 'laugh', group: 'emoji', emoji: '😂', label: 'Funny', sentiment: 'positive', score: 1 },
+        { id: 'fire', group: 'emoji', emoji: '🔥', label: 'Fire', sentiment: 'positive', score: 1 },
+        { id: 'thinking', group: 'emoji', emoji: '🤔', label: 'Thinking', sentiment: 'neutral', score: 0 },
+        { id: 'clap', group: 'emoji', emoji: '👏', label: 'Applause', sentiment: 'positive', score: 1 },
+        { id: 'skull', group: 'emoji', emoji: '💀', label: 'Dead', sentiment: 'positive', score: 1 },
+      ],
+    },
+    totals: { debater_a: { positive: 3, negative: 0, neutral: 0, net: 3, total: 3 }, debater_b: { positive: 0, negative: 0, neutral: 0, net: 0, total: 0 } },
+    turns: [{
+      turnId: 'turn_react',
+      counts: { thumb_down: 0, thumb_up: 1, double_thumb: 0, laugh: 1, fire: 1, thinking: 0, clap: 0, skull: 0 },
+      groups: { thumb: { thumb_down: 0, thumb_up: 1, double_thumb: 0 }, emoji: { laugh: 1, fire: 1, thinking: 0, clap: 0, skull: 0 } },
+      total: 3,
+    }],
+  },
+});
+const reactionHtml = renderAsPlayer(reactionRoom);
+assert.match(reactionHtml, /class="jury-panel/);
+assert.doesNotMatch(reactionHtml, /Strong logic/);
+assert.match(reactionHtml, /data-reaction-group="thumb"/);
+assert.match(reactionHtml, /data-reaction-id="double_thumb"/);
+assert.match(reactionHtml, /data-reaction-group="emoji"/);
+assert.match(reactionHtml, /class="turn-reaction thumb active"/);
+assert.match(reactionHtml, /<summary><span>Emoji<\/span><b>2<\/b><\/summary>/);
+
+state.ui.roomTab = 'chat';
+const formattedChatHtml = renderAsPlayer(makeRoom({
+  chatMessages: [{
+    id: 'chat_one',
+    playerId: 'bettor2',
+    displayName: 'Formatter',
+    text: '**Bold** _italic_ __under__ <script>',
+    createdAt: new Date().toISOString(),
+  }],
+}));
+assert.match(formattedChatHtml, /data-chat-format="bold"/);
+assert.match(formattedChatHtml, /data-chat-emoji="😂"/);
+assert.match(formattedChatHtml, /<strong>Bold<\/strong>/);
+assert.match(formattedChatHtml, /<em>italic<\/em>/);
+assert.match(formattedChatHtml, /<u>under<\/u>/);
+assert.match(formattedChatHtml, /&lt;script&gt;/);
+assert.doesNotMatch(formattedChatHtml, /<script>/);
+state.ui.roomTab = 'seats';
+
+const resultRoom = makeRoom({
+  status: 'RESULTS',
+  currentPhase: 'Results',
+  updatedAt: '2026-05-13T12:00:00.000Z',
+  verdict: {
+    winnerDebaterId: 'debater_a',
+    winnerName: 'Professor Steelman',
+    margin: 'clear',
+    confidence: 0.84,
+    scores: {
+      debater_a: { total: 48, logicalCoherence: 9, responsiveness: 8, rhetoricalForce: 8, humor: 7, originality: 8, topicControl: 8 },
+      debater_b: { total: 42, logicalCoherence: 7, responsiveness: 7, rhetoricalForce: 7, humor: 8, originality: 7, topicControl: 6 },
+    },
+    bestLine: { debaterId: 'debater_a', quote: 'The cleanest frame wins.' },
+    worstArgument: { debaterId: 'debater_b', summary: 'Missed the strongest premise.' },
+    audienceJury: { reactionCount: 3, crowdLeaderDebaterId: 'debater_a', crowdLeaderName: 'Professor Steelman', agreedWithJudge: true, summary: 'The audience agreed with the judge.' },
+    verdict: 'Professor Steelman wins with a clearer frame.',
+    propResults: [],
+  },
+  settlements: { leaderboard: [], settledAt: '2026-05-13T12:00:01.000Z' },
+  jury: reactionRoom.jury,
+});
+state.ui.dismissedResultSpotlightKey = '';
+state.ui.resultReviewOpenKey = '';
+const resultHtml = renderAsPlayer(resultRoom);
+assert.match(resultHtml, /class="result-spotlight"/);
+assert.match(resultHtml, /data-result-spotlight="view"/);
+assert.match(resultHtml, /id="round-result"/);
+const spotlightKey = resultSpotlightKey(resultRoom);
+state.ui.dismissedResultSpotlightKey = spotlightKey;
+const collapsedResultHtml = renderAsPlayer(resultRoom);
+assert.doesNotMatch(collapsedResultHtml, /class="result-spotlight"/);
+assert.match(collapsedResultHtml, /Round result/);
+state.ui.resultReviewOpenKey = spotlightKey;
+const openResultHtml = renderAsPlayer(resultRoom);
+assert.match(openResultHtml, /<details id="round-result" class="verdict panel inset result-review" open>/);
 
 console.log('Renderer checks passed.');
