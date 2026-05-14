@@ -980,6 +980,41 @@ meter {
   font-weight: 820;
 }
 
+.room-activity {
+  border-top: 1px solid rgba(83, 55, 24, 0.16);
+  margin-top: 0.8rem;
+  padding-top: 0.82rem;
+}
+
+.room-activity ul {
+  display: grid;
+  gap: 0.42rem;
+  list-style: none;
+  margin: 0.45rem 0 0;
+  padding: 0;
+}
+
+.room-activity li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  border: 1px solid rgba(83, 55, 24, 0.12);
+  border-radius: 7px;
+  padding: 0.45rem 0.55rem;
+  background: rgba(255, 253, 248, 0.62);
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  font-weight: 760;
+}
+
+.room-activity time {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
 .lobby-badges {
   display: flex;
   gap: 0.25rem;
@@ -4990,6 +5025,20 @@ textarea:focus {
   border-top-color: var(--line) !important;
 }
 
+.room-activity {
+  border-top-color: var(--line) !important;
+}
+
+.room-activity li {
+  background: #ffffff !important;
+  border-color: var(--line) !important;
+  color: var(--ink-soft) !important;
+}
+
+.room-activity time {
+  color: var(--muted) !important;
+}
+
 .market-card {
   border-left: 4px solid var(--arcade-coral) !important;
   background:
@@ -5013,6 +5062,7 @@ textarea:focus {
   border-left: 4px solid var(--arcade-violet) !important;
   background:
     linear-gradient(180deg, #ffffff, #f9fbff) !important;
+  overflow-anchor: none;
 }
 
 .turn.debater_a {
@@ -5025,6 +5075,15 @@ textarea:focus {
 
 .turn-head {
   gap: 0.4rem !important;
+}
+
+.live-turn-feature {
+  min-height: clamp(16rem, 36vh, 32rem);
+  align-content: start;
+}
+
+.streaming-turn .turn-body {
+  min-height: 6.5rem;
 }
 
 .jury-panel {
