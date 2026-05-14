@@ -4,7 +4,7 @@ import vm from 'node:vm';
 
 const appSource = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
   .replace('initAmbientMotion();\ninit();', '')
-  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey };');
+  .concat('\nglobalThis.__app = { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey, syncActiveSectionFromViewport, bindResultReview };');
 
 const root = { innerHTML: '' };
 const context = {
@@ -44,7 +44,7 @@ context.globalThis = context;
 vm.createContext(context);
 vm.runInContext(appSource, context, { filename: 'public/app.js' });
 
-const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey } = context.__app;
+const { state, roomHtml, roundLoopState, bettingWindowState, afterStartDebateUi, resultSpotlightKey, syncActiveSectionFromViewport, bindResultReview } = context.__app;
 
 function makeRoom(overrides = {}) {
   const openedAt = Date.now() - 10_000;
@@ -120,16 +120,21 @@ assert.doesNotMatch(activeHtml, /Resolution/);
 assert.doesNotMatch(activeHtml, /Resolved:/);
 assert.match(activeHtml, /Bet amount/);
 assert.match(activeHtml, /Place bet/);
+const playerBetButton = activeHtml.match(/<button type="button" data-action="placeBet"[^>]*>Place bet<\/button>/)?.[0] || '';
+assert.match(playerBetButton, /data-market-id="winner_a"/);
+assert.doesNotMatch(playerBetButton, /disabled/);
 assert.match(activeHtml, /Betting window/);
 assert.doesNotMatch(activeHtml, /Heckle Cards/);
 assert.match(activeHtml, /round-loop-mobile-progress/);
 assert.match(activeHtml, /Step 3 of 6/);
 assert.match(activeHtml, /aria-label="Bets"><span>Bets<\/span>/);
+assert.match(activeHtml, /class="mobile-exit" data-action="leaveRoom" aria-label="Leave room"><span>Exit<\/span>/);
 
 const hostActiveHtml = renderAsHost(activeRoom);
 assert.match(hostActiveHtml, /Hosts guide the round/);
 assert.doesNotMatch(hostActiveHtml, /Bet amount/);
 assert.doesNotMatch(hostActiveHtml, /data-action="placeBet"/);
+assert.match(hostActiveHtml, /class="mobile-exit" data-action="leaveRoom" aria-label="Leave room"><span>Exit<\/span>/);
 
 const doneRoom = makeRoom({
   bettingWindow: { ...activeRoom.bettingWindow, done: true, doneReason: 'all_bettors_ready', bettedCount: 2 },
@@ -311,5 +316,77 @@ assert.match(collapsedResultHtml, /Round result/);
 state.ui.resultReviewOpenKey = spotlightKey;
 const openResultHtml = renderAsPlayer(resultRoom);
 assert.match(openResultHtml, /<details id="round-result" class="verdict panel inset result-review" open>/);
+
+function makeNavItem(section) {
+  const classes = new Set();
+  const attrs = {};
+  return {
+    getAttribute(name) {
+      return name === 'href' && ['live', 'bets', 'room'].includes(section) ? `#${section}` : '';
+    },
+    hasAttribute(name) {
+      return (name === 'data-toggle-chat' && section === 'chat') || (name === 'data-toggle-host' && section === 'host');
+    },
+    setAttribute(name, value) {
+      attrs[name] = value;
+    },
+    removeAttribute(name) {
+      delete attrs[name];
+    },
+    classList: {
+      toggle(name, on) {
+        if (on) classes.add(name);
+        else classes.delete(name);
+      },
+    },
+    hasClass(name) {
+      return classes.has(name);
+    },
+  };
+}
+
+const originalGetElementById = context.document.getElementById;
+const originalQuerySelectorAll = context.document.querySelectorAll;
+try {
+  const navItems = ['live', 'bets', 'room', 'chat', 'host'].map(makeNavItem);
+  const sectionPositions = {
+    live: { getBoundingClientRect: () => ({ top: 800 }) },
+    bets: { getBoundingClientRect: () => ({ top: 60 }) },
+    room: { getBoundingClientRect: () => ({ top: 520 }) },
+  };
+  root.innerHTML = 'stable mobile room html';
+  state.room = activeRoom;
+  state.ui.hostConsoleOpen = false;
+  state.ui.roomTab = 'seats';
+  state.ui.activeSection = 'live';
+  context.document.getElementById = (id) => sectionPositions[id] || (id === 'root' ? root : null);
+  context.document.querySelectorAll = (selector) => selector.includes('mobile-section-nav') ? navItems : [];
+  syncActiveSectionFromViewport();
+  assert.equal(state.ui.activeSection, 'bets');
+  assert.equal(root.innerHTML, 'stable mobile room html');
+  assert.equal(navItems[1].hasClass('active'), true);
+  assert.equal(navItems[0].hasClass('active'), false);
+
+  let resultToggleHandler = null;
+  const fakeDetails = {
+    open: true,
+    addEventListener(event, handler) {
+      if (event === 'toggle') resultToggleHandler = handler;
+    },
+  };
+  context.document.getElementById = (id) => id === 'round-result' ? fakeDetails : null;
+  state.room = resultRoom;
+  state.ui.resultReviewOpenKey = '';
+  bindResultReview();
+  assert.equal(typeof resultToggleHandler, 'function');
+  resultToggleHandler();
+  assert.equal(state.ui.resultReviewOpenKey, spotlightKey);
+  fakeDetails.open = false;
+  resultToggleHandler();
+  assert.equal(state.ui.resultReviewOpenKey, '');
+} finally {
+  context.document.getElementById = originalGetElementById;
+  context.document.querySelectorAll = originalQuerySelectorAll;
+}
 
 console.log('Renderer checks passed.');
